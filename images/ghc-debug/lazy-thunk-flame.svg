@@ -1,0 +1,1930 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="950" onload="init(evt)" viewBox="0 0 1200 950" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<!-- NOTES:  -->
+<defs >
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#e0e0ff" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	.func_g:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	var details, searchbtn, matchedtxt, svg;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+	}
+
+	// mouse-over for info
+	function s(node) {		// show
+		info = g_to_text(node);
+		details.nodeValue = "Function: " + info;
+	}
+	function c() {			// clear
+		details.nodeValue = ' ';
+	}
+
+	// ctrl-F for search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+	})
+
+	// functions
+	function find_child(parent, name, attr) {
+		var children = parent.childNodes;
+		for (var i=0; i<children.length;i++) {
+			if (children[i].tagName == name)
+				return (attr != undefined) ? children[i].attributes[attr].value : children[i];
+		}
+		return;
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_"+attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_"+attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_"+attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		// if there's any manipulation we want to do to the function
+		// name before it's searched, do it here before returning.
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes["width"].value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes["x"].value = parseFloat(r.attributes["x"].value) +3;
+
+		// Smaller than this size won't fit anything
+		if (w < 2*12*0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		// Fit in full text width
+		if (/^ *$/.test(txt) || t.getSubStringLength(0, txt.length) < w)
+			return;
+
+		for (var x=txt.length-2; x>0; x--) {
+			if (t.getSubStringLength(0, x+2) <= w) {
+				t.textContent = txt.substring(0,x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for(var i=0, c=e.childNodes; i<c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes["x"] != undefined) {
+				orig_save(e, "x");
+				e.attributes["x"].value = (parseFloat(e.attributes["x"].value) - x - 10) * ratio + 10;
+				if(e.tagName == "text") e.attributes["x"].value = find_child(e.parentNode, "rect", "x") + 3;
+			}
+			if (e.attributes["width"] != undefined) {
+				orig_save(e, "width");
+				e.attributes["width"].value = parseFloat(e.attributes["width"].value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for(var i=0, c=e.childNodes; i<c.length; i++) {
+			zoom_child(c[i], x-10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes["x"] != undefined) {
+				orig_save(e, "x");
+				e.attributes["x"].value = 10;
+			}
+			if (e.attributes["width"] != undefined) {
+				orig_save(e, "width");
+				e.attributes["width"].value = parseInt(svg.width.baseVal.value) - (10*2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for(var i=0, c=e.childNodes; i<c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr["width"].value);
+		var xmin = parseFloat(attr["x"].value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr["y"].value);
+		var ratio = (svg.width.baseVal.value - 2*10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		var unzoombtn = document.getElementById("unzoom");
+		unzoombtn.style["opacity"] = "1.0";
+
+		var el = document.getElementsByTagName("g");
+		for(var i=0;i<el.length;i++){
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a["x"].value);
+			var ew = parseFloat(a["width"].value);
+			// Is it an ancestor
+			if (0 == 0) {
+				var upstack = parseFloat(a["y"].value) > ymin;
+			} else {
+				var upstack = parseFloat(a["y"].value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.style["opacity"] = "0.5";
+					zoom_parent(e);
+					e.onclick = function(e){unzoom(); zoom(this);};
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.style["display"] = "none";
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.style["display"] = "none";
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					e.onclick = function(e){zoom(this);};
+					update_text(e);
+				}
+			}
+		}
+	}
+	function unzoom() {
+		var unzoombtn = document.getElementById("unzoom");
+		unzoombtn.style["opacity"] = "0.0";
+
+		var el = document.getElementsByTagName("g");
+		for(i=0;i<el.length;i++) {
+			el[i].style["display"] = "block";
+			el[i].style["opacity"] = "1";
+			zoom_reset(el[i]);
+			update_text(el[i]);
+		}
+	}
+
+	// search
+	function reset_search() {
+		var el = document.getElementsByTagName("rect");
+		for (var i=0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)", "");
+			if (term != null) {
+				search(term)
+			}
+		} else {
+			reset_search();
+			searching = 0;
+			searchbtn.style["opacity"] = "0.1";
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.style["opacity"] = "0.0";
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		var re = new RegExp(term);
+		var el = document.getElementsByTagName("g");
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			if (e.attributes["class"].value != "func_g")
+				continue;
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (rect == null) {
+				// the rect might be wrapped in an anchor
+				// if nameattr href is being used
+				if (rect = find_child(e, "a")) {
+				    rect = find_child(r, "rect");
+				}
+			}
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes["width"].value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes["x"].value);
+				orig_save(rect, "fill");
+				rect.attributes["fill"].value =
+				    "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+
+		searchbtn.style["opacity"] = "1.0";
+		searchbtn.firstChild.nodeValue = "Reset Search"
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+			return a - b;
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		var fudge = 0.0001;	// JavaScript floating point
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw - fudge) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.style["opacity"] = "1.0";
+		pct = 100 * count / maxwidth;
+		if (pct == 100)
+			pct = "100"
+		else
+			pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+	function searchover(e) {
+		searchbtn.style["opacity"] = "1.0";
+	}
+	function searchout(e) {
+		if (searching) {
+			searchbtn.style["opacity"] = "1.0";
+		} else {
+			searchbtn.style["opacity"] = "0.1";
+		}
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="1200.0" height="950.0" fill="url(#background)"  />
+<text text-anchor="middle" x="600.00" y="24" font-size="17" font-family="Verdana" fill="rgb(0,0,0)"  >Flame Graph</text>
+<text text-anchor="" x="10.00" y="933" font-size="12" font-family="Verdana" fill="rgb(0,0,0)" id="details" > </text>
+<text text-anchor="" x="10.00" y="24" font-size="12" font-family="Verdana" fill="rgb(0,0,0)" id="unzoom" onclick="unzoom()" style="opacity:0.0;cursor:pointer" >Reset Zoom</text>
+<text text-anchor="" x="1090.00" y="24" font-size="12" font-family="Verdana" fill="rgb(0,0,0)" id="search" onmouseover="searchover()" onmouseout="searchout()" onclick="search_prompt()" style="opacity:0.1;cursor:pointer" >Search</text>
+<text text-anchor="" x="1090.00" y="933" font-size="12" font-family="Verdana" fill="rgb(0,0,0)" id="matched" > </text>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (2 samples, 0.83%)</title><rect x="10.0" y="853" width="9.8" height="15.0" fill="rgb(0,225,114)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="863.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>-&gt; (# State# RealWorld, a #):libraries/base/GHC/IO/Handle/Internals.hs:(249,1)-(250,51) (4 samples, 1.67%)</title><rect x="486.9" y="885" width="19.7" height="15.0" fill="rgb(0,230,120)" rx="2" ry="2" />
+<text text-anchor="" x="489.92" y="895.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (4 samples, 1.67%)</title><rect x="486.9" y="821" width="19.7" height="15.0" fill="rgb(0,222,166)" rx="2" ry="2" />
+<text text-anchor="" x="489.92" y="831.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (1 samples, 0.42%)</title><rect x="550.8" y="837" width="5.0" height="15.0" fill="rgb(0,199,36)" rx="2" ry="2" />
+<text text-anchor="" x="553.83" y="847.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_2_0_: (9 samples, 3.75%)</title><rect x="418.1" y="773" width="44.2" height="15.0" fill="rgb(0,238,129)" rx="2" ry="2" />
+<text text-anchor="" x="421.08" y="783.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >CONS..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>FUN_STATIC_Int32# -&gt; State# RealWorld -&gt; (# State# RealWorld, Integer #):libraries/base/System/Posix/Internals.hs:(88,1)-(97,34) (1 samples, 0.42%)</title><rect x="811.4" y="773" width="4.9" height="15.0" fill="rgb(0,214,20)" rx="2" ry="2" />
+<text text-anchor="" x="814.42" y="783.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>THUNK_1_0_Int:test-progs/LazyThunk.hs:12:53-57 (1 samples, 0.42%)</title><rect x="1086.8" y="405" width="4.9" height="15.0" fill="rgb(0,192,25)" rx="2" ry="2" />
+<text text-anchor="" x="1089.75" y="415.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>THUNK_1_0_Int:test-progs/LazyThunk.hs:12:53-57 (1 samples, 0.42%)</title><rect x="1086.8" y="53" width="4.9" height="15.0" fill="rgb(0,193,156)" rx="2" ry="2" />
+<text text-anchor="" x="1089.75" y="63.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_: (4 samples, 1.67%)</title><rect x="486.9" y="805" width="19.7" height="15.0" fill="rgb(0,229,201)" rx="2" ry="2" />
+<text text-anchor="" x="489.92" y="815.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_AC:libraries/base/GHC/Event/KQueue.hsc:75:7-18 (1 samples, 0.42%)</title><rect x="895.0" y="789" width="4.9" height="15.0" fill="rgb(0,209,46)" rx="2" ry="2" />
+<text text-anchor="" x="898.00" y="799.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>FUN_STATIC_State# RealWorld -&gt; (# State# RealWorld, () #):libraries/base/GHC/Event/Thread.hs:(330,1)-(359,63) (6 samples, 2.50%)</title><rect x="590.2" y="869" width="29.5" height="15.0" fill="rgb(0,214,115)" rx="2" ry="2" />
+<text text-anchor="" x="593.17" y="879.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >FU..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>THUNK_1_0_Int:test-progs/LazyThunk.hs:12:53-57 (1 samples, 0.42%)</title><rect x="1086.8" y="693" width="4.9" height="15.0" fill="rgb(0,231,192)" rx="2" ry="2" />
+<text text-anchor="" x="1089.75" y="703.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_2_0_[]:libraries/base/GHC/Foreign.hs:209:42-58 (1 samples, 0.42%)</title><rect x="880.2" y="661" width="5.0" height="15.0" fill="rgb(0,208,29)" rx="2" ry="2" />
+<text text-anchor="" x="883.25" y="671.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (1 samples, 0.42%)</title><rect x="550.8" y="853" width="5.0" height="15.0" fill="rgb(0,204,83)" rx="2" ry="2" />
+<text text-anchor="" x="553.83" y="863.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>THUNK_1_0_Int:test-progs/LazyThunk.hs:12:53-57 (1 samples, 0.42%)</title><rect x="1086.8" y="277" width="4.9" height="15.0" fill="rgb(0,228,27)" rx="2" ry="2" />
+<text text-anchor="" x="1089.75" y="287.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>FUN_STATIC_State# RealWorld -&gt; (# State# RealWorld, Backend #): (1 samples, 0.42%)</title><rect x="305.0" y="773" width="4.9" height="15.0" fill="rgb(0,236,28)" rx="2" ry="2" />
+<text text-anchor="" x="308.00" y="783.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (4 samples, 1.67%)</title><rect x="29.7" y="773" width="19.6" height="15.0" fill="rgb(0,197,112)" rx="2" ry="2" />
+<text text-anchor="" x="32.67" y="783.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>SomeException -&gt; State# RealWorld -&gt; (# State# RealWorld, a #):libraries/base/GHC/TopHandler.hs:159:52-61 (2 samples, 0.83%)</title><rect x="619.7" y="885" width="9.8" height="15.0" fill="rgb(0,201,19)" rx="2" ry="2" />
+<text text-anchor="" x="622.67" y="895.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (3 samples, 1.25%)</title><rect x="34.6" y="709" width="14.7" height="15.0" fill="rgb(0,202,20)" rx="2" ry="2" />
+<text text-anchor="" x="37.58" y="719.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (2 samples, 0.83%)</title><rect x="10.0" y="869" width="9.8" height="15.0" fill="rgb(0,191,130)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="879.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>MUT_VAR_CLEAN_: (7 samples, 2.92%)</title><rect x="427.9" y="725" width="34.4" height="15.0" fill="rgb(0,214,161)" rx="2" ry="2" />
+<text text-anchor="" x="430.92" y="735.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >MU..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>FUN_2_0_  (9 samples, 3.75%)</title><rect x="840.9" y="821" width="44.3" height="15.0" fill="rgb(0,209,22)" rx="2" ry="2" />
+<text text-anchor="" x="843.92" y="831.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >FUN_..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_2_0_: (1 samples, 0.42%)</title><rect x="629.5" y="853" width="4.9" height="15.0" fill="rgb(0,225,201)" rx="2" ry="2" />
+<text text-anchor="" x="632.50" y="863.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>THUNK_1_0_Int:test-progs/LazyThunk.hs:12:53-57 (1 samples, 0.42%)</title><rect x="1086.8" y="101" width="4.9" height="15.0" fill="rgb(0,215,86)" rx="2" ry="2" />
+<text text-anchor="" x="1089.75" y="111.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_TypeRep: (5 samples, 2.08%)</title><rect x="462.3" y="853" width="24.6" height="15.0" fill="rgb(0,218,55)" rx="2" ry="2" />
+<text text-anchor="" x="465.33" y="863.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >C..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (2 samples, 0.83%)</title><rect x="270.6" y="677" width="9.8" height="15.0" fill="rgb(0,228,74)" rx="2" ry="2" />
+<text text-anchor="" x="273.58" y="687.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>FUN_STATIC_IO ():libraries/base/GHC/Conc/IO.hs:92:1-65 (6 samples, 2.50%)</title><rect x="590.2" y="885" width="29.5" height="15.0" fill="rgb(0,232,55)" rx="2" ry="2" />
+<text text-anchor="" x="593.17" y="895.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >FU..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>THUNK_1_0_Int:test-progs/LazyThunk.hs:12:53-57 (1 samples, 0.42%)</title><rect x="1086.8" y="181" width="4.9" height="15.0" fill="rgb(0,210,106)" rx="2" ry="2" />
+<text text-anchor="" x="1089.75" y="191.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_2_0_Module: (2 samples, 0.83%)</title><rect x="477.1" y="821" width="9.8" height="15.0" fill="rgb(0,201,117)" rx="2" ry="2" />
+<text text-anchor="" x="480.08" y="831.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (1 samples, 0.42%)</title><rect x="580.3" y="789" width="4.9" height="15.0" fill="rgb(0,213,118)" rx="2" ry="2" />
+<text text-anchor="" x="583.33" y="799.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (2 samples, 0.83%)</title><rect x="418.1" y="741" width="9.8" height="15.0" fill="rgb(0,223,111)" rx="2" ry="2" />
+<text text-anchor="" x="421.08" y="751.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_2_0_ForeignPtrContents:libraries/base/GHC/IO/Handle/Internals.hs:679:45-53 (1 samples, 0.42%)</title><rect x="708.2" y="821" width="4.9" height="15.0" fill="rgb(0,226,80)" rx="2" ry="2" />
+<text text-anchor="" x="711.17" y="831.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>MUT_VAR_CLEAN_: (1 samples, 0.42%)</title><rect x="654.1" y="837" width="4.9" height="15.0" fill="rgb(0,235,68)" rx="2" ry="2" />
+<text text-anchor="" x="657.08" y="847.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>THUNK_1_0_Int:test-progs/LazyThunk.hs:12:53-57 (1 samples, 0.42%)</title><rect x="1086.8" y="629" width="4.9" height="15.0" fill="rgb(0,211,24)" rx="2" ry="2" />
+<text text-anchor="" x="1089.75" y="639.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>-&gt; (# State# RealWorld, Int #): (23 samples, 9.58%)</title><rect x="349.2" y="885" width="113.1" height="15.0" fill="rgb(0,231,127)" rx="2" ry="2" />
+<text text-anchor="" x="352.25" y="895.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >-&gt; (# State# ..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_Buffer:libraries/base/GHC/IO/Handle/Text.hs:226:25-44 (1 samples, 0.42%)</title><rect x="708.2" y="837" width="4.9" height="15.0" fill="rgb(0,223,182)" rx="2" ry="2" />
+<text text-anchor="" x="711.17" y="847.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>FUN_STATIC_Int32# -&gt; Bool -&gt; State# RealWorld -&gt; (# State# RealWorld, () #):libraries/base/System/Posix/Internals.hs:(322,1)-(332,13) (1 samples, 0.42%)</title><rect x="300.1" y="677" width="4.9" height="15.0" fill="rgb(0,210,169)" rx="2" ry="2" />
+<text text-anchor="" x="303.08" y="687.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_Bucket:libraries/base/GHC/Event/IntTable.hs:106:54-57 (2 samples, 0.83%)</title><rect x="1057.2" y="709" width="9.9" height="15.0" fill="rgb(0,218,123)" rx="2" ry="2" />
+<text text-anchor="" x="1060.25" y="719.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_2_0_: (4 samples, 1.67%)</title><rect x="486.9" y="853" width="19.7" height="15.0" fill="rgb(0,225,175)" rx="2" ry="2" />
+<text text-anchor="" x="489.92" y="863.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>MUT_VAR_CLEAN_: (34 samples, 14.17%)</title><rect x="899.9" y="757" width="167.2" height="15.0" fill="rgb(0,217,7)" rx="2" ry="2" />
+<text text-anchor="" x="902.92" y="767.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >MUT_VAR_CLEAN_:</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_KindRep: (1 samples, 0.42%)</title><rect x="472.2" y="821" width="4.9" height="15.0" fill="rgb(0,235,65)" rx="2" ry="2" />
+<text text-anchor="" x="475.17" y="831.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (1 samples, 0.42%)</title><rect x="791.8" y="789" width="4.9" height="15.0" fill="rgb(0,194,98)" rx="2" ry="2" />
+<text text-anchor="" x="794.75" y="799.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>FUN_SomeException -&gt; State# RealWorld -&gt; (# State# RealWorld, a #):libraries/base/GHC/IO/Handle/Internals.hs:175:27-36 (3 samples, 1.25%)</title><rect x="1067.1" y="837" width="14.7" height="15.0" fill="rgb(0,204,106)" rx="2" ry="2" />
+<text text-anchor="" x="1070.08" y="847.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>TSO_: (19 samples, 7.92%)</title><rect x="1091.7" y="837" width="93.4" height="15.0" fill="rgb(0,216,147)" rx="2" ry="2" />
+<text text-anchor="" x="1094.67" y="847.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >TSO_:</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_RuntimeRep: (1 samples, 0.42%)</title><rect x="472.2" y="805" width="4.9" height="15.0" fill="rgb(0,223,25)" rx="2" ry="2" />
+<text text-anchor="" x="475.17" y="815.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (1 samples, 0.42%)</title><rect x="580.3" y="821" width="4.9" height="15.0" fill="rgb(0,208,200)" rx="2" ry="2" />
+<text text-anchor="" x="583.33" y="831.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_2_0_: (11 samples, 4.58%)</title><rect x="19.8" y="869" width="54.1" height="15.0" fill="rgb(0,239,195)" rx="2" ry="2" />
+<text text-anchor="" x="22.83" y="879.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >CONST..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_2_0_: (12 samples, 5.00%)</title><rect x="403.3" y="805" width="59.0" height="15.0" fill="rgb(0,234,48)" rx="2" ry="2" />
+<text text-anchor="" x="406.33" y="815.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >CONSTR..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>MUT_ARR_PTRS_CLEAN_: (1 samples, 0.42%)</title><rect x="560.7" y="837" width="4.9" height="15.0" fill="rgb(0,191,129)" rx="2" ry="2" />
+<text text-anchor="" x="563.67" y="847.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>THUNK_1_0_Int:test-progs/LazyThunk.hs:12:53-57 (1 samples, 0.42%)</title><rect x="1086.8" y="37" width="4.9" height="15.0" fill="rgb(0,199,117)" rx="2" ry="2" />
+<text text-anchor="" x="1089.75" y="47.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (2 samples, 0.83%)</title><rect x="10.0" y="773" width="9.8" height="15.0" fill="rgb(0,223,111)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="783.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (2 samples, 0.83%)</title><rect x="280.4" y="661" width="9.8" height="15.0" fill="rgb(0,215,191)" rx="2" ry="2" />
+<text text-anchor="" x="283.42" y="671.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_2_0_: (3 samples, 1.25%)</title><rect x="34.6" y="693" width="14.7" height="15.0" fill="rgb(0,224,51)" rx="2" ry="2" />
+<text text-anchor="" x="37.58" y="703.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (5 samples, 2.08%)</title><rect x="359.1" y="709" width="24.6" height="15.0" fill="rgb(0,227,195)" rx="2" ry="2" />
+<text text-anchor="" x="362.08" y="719.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >C..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_2_0_BufferList:libraries/base/GHC/IO/Handle/Text.hs:724:50-59 (1 samples, 0.42%)</title><rect x="98.5" y="773" width="4.9" height="15.0" fill="rgb(0,225,9)" rx="2" ry="2" />
+<text text-anchor="" x="101.50" y="783.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>THUNK_1_0_Int:test-progs/LazyThunk.hs:12:53-57 (1 samples, 0.42%)</title><rect x="1086.8" y="501" width="4.9" height="15.0" fill="rgb(0,213,157)" rx="2" ry="2" />
+<text text-anchor="" x="1089.75" y="511.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (3 samples, 1.25%)</title><rect x="388.6" y="773" width="14.7" height="15.0" fill="rgb(0,225,133)" rx="2" ry="2" />
+<text text-anchor="" x="391.58" y="783.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>MUT_VAR_CLEAN_: (1 samples, 0.42%)</title><rect x="629.5" y="805" width="4.9" height="15.0" fill="rgb(0,201,92)" rx="2" ry="2" />
+<text text-anchor="" x="632.50" y="815.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>THUNK_1_0_Int:test-progs/LazyThunk.hs:12:53-57 (1 samples, 0.42%)</title><rect x="1086.8" y="197" width="4.9" height="15.0" fill="rgb(0,203,53)" rx="2" ry="2" />
+<text text-anchor="" x="1089.75" y="207.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>THUNK_1_0_Int:test-progs/LazyThunk.hs:12:53-57 (1 samples, 0.42%)</title><rect x="1086.8" y="741" width="4.9" height="15.0" fill="rgb(0,213,116)" rx="2" ry="2" />
+<text text-anchor="" x="1089.75" y="751.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_2_0_: (8 samples, 3.33%)</title><rect x="506.6" y="853" width="39.3" height="15.0" fill="rgb(0,211,51)" rx="2" ry="2" />
+<text text-anchor="" x="509.58" y="863.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >CON..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (10 samples, 4.17%)</title><rect x="354.2" y="837" width="49.1" height="15.0" fill="rgb(0,210,101)" rx="2" ry="2" />
+<text text-anchor="" x="357.17" y="847.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >CONS..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>FUN_SomeException -&gt; State# RealWorld -&gt; (# State# RealWorld, () #):libraries/base/GHC/Event/TimerManager.hs:158:29-39 (1 samples, 0.42%)</title><rect x="659.0" y="853" width="4.9" height="15.0" fill="rgb(0,198,112)" rx="2" ry="2" />
+<text text-anchor="" x="662.00" y="863.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>THUNK_1_0_Int:test-progs/LazyThunk.hs:12:53-57 (1 samples, 0.42%)</title><rect x="1086.8" y="453" width="4.9" height="15.0" fill="rgb(0,233,151)" rx="2" ry="2" />
+<text text-anchor="" x="1089.75" y="463.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>FUN_1_0_Handle__ -&gt; IO (Handle__, a):libraries/base/GHC/IO/Handle/Internals.hs:141:34-36 (1 samples, 0.42%)</title><rect x="1076.9" y="821" width="4.9" height="15.0" fill="rgb(0,228,52)" rx="2" ry="2" />
+<text text-anchor="" x="1079.92" y="831.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>IND_STATIC_: (1 samples, 0.42%)</title><rect x="580.3" y="741" width="4.9" height="15.0" fill="rgb(0,214,97)" rx="2" ry="2" />
+<text text-anchor="" x="583.33" y="751.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (1 samples, 0.42%)</title><rect x="378.8" y="613" width="4.9" height="15.0" fill="rgb(0,236,32)" rx="2" ry="2" />
+<text text-anchor="" x="381.75" y="623.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (2 samples, 0.83%)</title><rect x="10.0" y="741" width="9.8" height="15.0" fill="rgb(0,208,160)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="751.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>THUNK_1_0_Int:test-progs/LazyThunk.hs:12:53-57 (1 samples, 0.42%)</title><rect x="1086.8" y="597" width="4.9" height="15.0" fill="rgb(0,239,192)" rx="2" ry="2" />
+<text text-anchor="" x="1089.75" y="607.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (2 samples, 0.83%)</title><rect x="408.2" y="533" width="9.9" height="15.0" fill="rgb(0,233,133)" rx="2" ry="2" />
+<text text-anchor="" x="411.25" y="543.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_2_0_: (2 samples, 0.83%)</title><rect x="408.2" y="517" width="9.9" height="15.0" fill="rgb(0,220,70)" rx="2" ry="2" />
+<text text-anchor="" x="411.25" y="527.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>THUNK_1_0_Int:test-progs/LazyThunk.hs:12:53-57 (1 samples, 0.42%)</title><rect x="1086.8" y="229" width="4.9" height="15.0" fill="rgb(0,218,190)" rx="2" ry="2" />
+<text text-anchor="" x="1089.75" y="239.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>THUNK_1_0_Int:test-progs/LazyThunk.hs:12:53-57 (1 samples, 0.42%)</title><rect x="1086.8" y="85" width="4.9" height="15.0" fill="rgb(0,197,202)" rx="2" ry="2" />
+<text text-anchor="" x="1089.75" y="95.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>   -&gt; (# State# RealWorld, a #):libraries/base/GHC/TopHandler.hs:(170,1)-(196,40) (20 samples, 8.33%)</title><rect x="19.8" y="885" width="98.4" height="15.0" fill="rgb(0,193,170)" rx="2" ry="2" />
+<text text-anchor="" x="22.83" y="895.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >   -&gt; (# St..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>FUN_STATIC_() -&gt; State# RealWorld -&gt; (# State# RealWorld, () #):libraries/base/GHC/Event/Thread.hs:(250,28)-(254,47) (1 samples, 0.42%)</title><rect x="580.3" y="837" width="4.9" height="15.0" fill="rgb(0,197,28)" rx="2" ry="2" />
+<text text-anchor="" x="583.33" y="847.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_TyCon:libraries/base/Data/Typeable/Internal.hs:(137,1)-(138,35) (4 samples, 1.67%)</title><rect x="467.2" y="837" width="19.7" height="15.0" fill="rgb(0,195,1)" rx="2" ry="2" />
+<text text-anchor="" x="470.25" y="847.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_2_0_: (6 samples, 2.50%)</title><rect x="19.8" y="853" width="29.5" height="15.0" fill="rgb(0,218,48)" rx="2" ry="2" />
+<text text-anchor="" x="22.83" y="863.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >CO..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_2_0_: (4 samples, 1.67%)</title><rect x="29.7" y="805" width="19.6" height="15.0" fill="rgb(0,220,47)" rx="2" ry="2" />
+<text text-anchor="" x="32.67" y="815.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>THUNK_1_0_Int:test-progs/LazyThunk.hs:12:53-57 (1 samples, 0.42%)</title><rect x="1086.8" y="565" width="4.9" height="15.0" fill="rgb(0,194,113)" rx="2" ry="2" />
+<text text-anchor="" x="1089.75" y="575.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_2_0_Handle:libraries/base/GHC/IO/Handle/FD.hs:57:13-20 (1 samples, 0.42%)</title><rect x="1072.0" y="821" width="4.9" height="15.0" fill="rgb(0,221,24)" rx="2" ry="2" />
+<text text-anchor="" x="1075.00" y="831.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (5 samples, 2.08%)</title><rect x="1160.5" y="757" width="24.6" height="15.0" fill="rgb(0,220,111)" rx="2" ry="2" />
+<text text-anchor="" x="1163.50" y="767.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >C..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_Maybe:libraries/base/GHC/Event/Thread.hs:303:35-42 (2 samples, 0.83%)</title><rect x="565.6" y="853" width="9.8" height="15.0" fill="rgb(0,198,206)" rx="2" ry="2" />
+<text text-anchor="" x="568.58" y="863.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>THUNK_1_0_Int:test-progs/LazyThunk.hs:12:53-57 (1 samples, 0.42%)</title><rect x="1086.8" y="469" width="4.9" height="15.0" fill="rgb(0,236,69)" rx="2" ry="2" />
+<text text-anchor="" x="1089.75" y="479.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_1_ForeignPtr:libraries/base/GHC/Event/KQueue.hsc:150:5-19 (1 samples, 0.42%)</title><rect x="895.0" y="773" width="4.9" height="15.0" fill="rgb(0,208,49)" rx="2" ry="2" />
+<text text-anchor="" x="898.00" y="783.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>THUNK_1_0_Int:test-progs/LazyThunk.hs:12:53-57 (1 samples, 0.42%)</title><rect x="1086.8" y="533" width="4.9" height="15.0" fill="rgb(0,238,104)" rx="2" ry="2" />
+<text text-anchor="" x="1089.75" y="543.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_BufferedIO: (6 samples, 2.50%)</title><rect x="713.1" y="837" width="29.5" height="15.0" fill="rgb(0,202,86)" rx="2" ry="2" />
+<text text-anchor="" x="716.08" y="847.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >CO..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_2_0_[]:libraries/base/GHC/Foreign.hs:209:42-58 (8 samples, 3.33%)</title><rect x="845.8" y="773" width="39.4" height="15.0" fill="rgb(0,228,150)" rx="2" ry="2" />
+<text text-anchor="" x="848.83" y="783.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >CON..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>FUN_STATIC_IO ():libraries/base/GHC/Event/Thread.hs:125:20-68 (2 samples, 0.83%)</title><rect x="408.2" y="501" width="9.9" height="15.0" fill="rgb(0,196,60)" rx="2" ry="2" />
+<text text-anchor="" x="411.25" y="511.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_Buffer:libraries/base/GHC/IO/Handle/Internals.hs:679:45-53 (1 samples, 0.42%)</title><rect x="113.2" y="773" width="5.0" height="15.0" fill="rgb(0,236,20)" rx="2" ry="2" />
+<text text-anchor="" x="116.25" y="783.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_2_0_: (2 samples, 0.83%)</title><rect x="280.4" y="645" width="9.8" height="15.0" fill="rgb(0,194,2)" rx="2" ry="2" />
+<text text-anchor="" x="283.42" y="655.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_2_0_[]:libraries/base/GHC/Foreign.hs:209:42-58 (2 samples, 0.83%)</title><rect x="875.3" y="677" width="9.9" height="15.0" fill="rgb(0,232,202)" rx="2" ry="2" />
+<text text-anchor="" x="878.33" y="687.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>-&gt; (# State# RealWorld, a #):libraries/base/GHC/IO/Handle/Internals.hs:(172,1)-(188,21) (5 samples, 2.08%)</title><rect x="462.3" y="885" width="24.6" height="15.0" fill="rgb(0,190,20)" rx="2" ry="2" />
+<text text-anchor="" x="465.33" y="895.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >-..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>THUNK_1_0_Int:test-progs/LazyThunk.hs:12:53-57 (1 samples, 0.42%)</title><rect x="1086.8" y="389" width="4.9" height="15.0" fill="rgb(0,212,36)" rx="2" ry="2" />
+<text text-anchor="" x="1089.75" y="399.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>FUN_STATIC_State# RealWorld -&gt; (# State# RealWorld, Maybe EventManager #):libraries/base/GHC/Event/Thread.hs:(178,1)-(183,24) (9 samples, 3.75%)</title><rect x="418.1" y="789" width="44.2" height="15.0" fill="rgb(0,221,38)" rx="2" ry="2" />
+<text text-anchor="" x="421.08" y="799.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >FUN_..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_: (3 samples, 1.25%)</title><rect x="388.6" y="757" width="14.7" height="15.0" fill="rgb(0,212,81)" rx="2" ry="2" />
+<text text-anchor="" x="391.58" y="767.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>THUNK_1_0_Int:test-progs/LazyThunk.hs:12:53-57 (1 samples, 0.42%)</title><rect x="1086.8" y="613" width="4.9" height="15.0" fill="rgb(0,226,14)" rx="2" ry="2" />
+<text text-anchor="" x="1089.75" y="623.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_2_0_: (1 samples, 0.42%)</title><rect x="1180.2" y="645" width="4.9" height="15.0" fill="rgb(0,229,157)" rx="2" ry="2" />
+<text text-anchor="" x="1183.17" y="655.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>FUN_STATIC_() -&gt; State# RealWorld -&gt; (# State# RealWorld, () #):libraries/base/GHC/Event/Thread.hs:(330,1)-(359,63) (6 samples, 2.50%)</title><rect x="590.2" y="853" width="29.5" height="15.0" fill="rgb(0,198,120)" rx="2" ry="2" />
+<text text-anchor="" x="593.17" y="863.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >FU..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (1 samples, 0.42%)</title><rect x="398.4" y="661" width="4.9" height="15.0" fill="rgb(0,209,197)" rx="2" ry="2" />
+<text text-anchor="" x="401.42" y="671.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (2 samples, 0.83%)</title><rect x="10.0" y="757" width="9.8" height="15.0" fill="rgb(0,193,10)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="767.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_STRef:libraries/base/GHC/Event/Thread.hs:199:5-59 (7 samples, 2.92%)</title><rect x="427.9" y="741" width="34.4" height="15.0" fill="rgb(0,231,118)" rx="2" ry="2" />
+<text text-anchor="" x="430.92" y="751.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >CO..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>FUN_STATIC_State# RealWorld -&gt; (# State# RealWorld, () #):libraries/base/GHC/TopHandler.hs:236:10-15 (5 samples, 2.08%)</title><rect x="49.3" y="853" width="24.6" height="15.0" fill="rgb(0,236,105)" rx="2" ry="2" />
+<text text-anchor="" x="52.33" y="863.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >F..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_Maybe:libraries/base/GHC/IO/Handle/Internals.hs:816:35-41 (1 samples, 0.42%)</title><rect x="698.3" y="837" width="4.9" height="15.0" fill="rgb(0,203,20)" rx="2" ry="2" />
+<text text-anchor="" x="701.33" y="847.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_: (3 samples, 1.25%)</title><rect x="309.9" y="869" width="14.8" height="15.0" fill="rgb(0,220,177)" rx="2" ry="2" />
+<text text-anchor="" x="312.92" y="879.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_2_0_: (2 samples, 0.83%)</title><rect x="39.5" y="677" width="9.8" height="15.0" fill="rgb(0,203,44)" rx="2" ry="2" />
+<text text-anchor="" x="42.50" y="687.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (1 samples, 0.42%)</title><rect x="393.5" y="677" width="4.9" height="15.0" fill="rgb(0,200,90)" rx="2" ry="2" />
+<text text-anchor="" x="396.50" y="687.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>MUT_ARR_PTRS_FROZEN_CLEAN_: (34 samples, 14.17%)</title><rect x="899.9" y="821" width="167.2" height="15.0" fill="rgb(0,233,191)" rx="2" ry="2" />
+<text text-anchor="" x="902.92" y="831.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >MUT_ARR_PTRS_FROZEN_C..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>TSO_: (105 samples, 43.75%)</title><rect x="668.8" y="853" width="516.3" height="15.0" fill="rgb(0,219,99)" rx="2" ry="2" />
+<text text-anchor="" x="671.83" y="863.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >TSO_:</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>MVAR_DIRTY_: (7 samples, 2.92%)</title><rect x="83.8" y="821" width="34.4" height="15.0" fill="rgb(0,233,100)" rx="2" ry="2" />
+<text text-anchor="" x="86.75" y="831.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >MV..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>FUN_State# RealWorld -&gt; (# State# RealWorld, () #):libraries/base/GHC/Event/TimerManager.hs:(164,3)-(165,25) (1 samples, 0.42%)</title><rect x="663.9" y="853" width="4.9" height="15.0" fill="rgb(0,222,167)" rx="2" ry="2" />
+<text text-anchor="" x="666.92" y="863.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (1 samples, 0.42%)</title><rect x="378.8" y="565" width="4.9" height="15.0" fill="rgb(0,235,36)" rx="2" ry="2" />
+<text text-anchor="" x="381.75" y="575.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>MUT_VAR_CLEAN_: (1 samples, 0.42%)</title><rect x="1116.2" y="805" width="5.0" height="15.0" fill="rgb(0,217,12)" rx="2" ry="2" />
+<text text-anchor="" x="1119.25" y="815.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (1 samples, 0.42%)</title><rect x="580.3" y="773" width="4.9" height="15.0" fill="rgb(0,192,106)" rx="2" ry="2" />
+<text text-anchor="" x="583.33" y="783.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>THUNK_1_0_Int:test-progs/LazyThunk.hs:12:53-57 (1 samples, 0.42%)</title><rect x="1086.8" y="789" width="4.9" height="15.0" fill="rgb(0,218,17)" rx="2" ry="2" />
+<text text-anchor="" x="1089.75" y="799.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>FUN_STATIC_Int32# -&gt; IO ():libraries/base/GHC/Event/Manager.hs:219:21-39 (1 samples, 0.42%)</title><rect x="285.3" y="629" width="4.9" height="15.0" fill="rgb(0,198,104)" rx="2" ry="2" />
+<text text-anchor="" x="288.33" y="639.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (2 samples, 0.83%)</title><rect x="270.6" y="613" width="9.8" height="15.0" fill="rgb(0,224,48)" rx="2" ry="2" />
+<text text-anchor="" x="273.58" y="623.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (2 samples, 0.83%)</title><rect x="516.4" y="805" width="9.8" height="15.0" fill="rgb(0,234,110)" rx="2" ry="2" />
+<text text-anchor="" x="519.42" y="815.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>FUN_STATIC_Event -&gt; Fd -&gt; State# RealWorld -&gt; (# State# RealWorld, () #):libraries/base/GHC/Event/Thread.hs:(119,1)-(126,18) (12 samples, 5.00%)</title><rect x="403.3" y="853" width="59.0" height="15.0" fill="rgb(0,190,192)" rx="2" ry="2" />
+<text text-anchor="" x="406.33" y="863.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >FUN_ST..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_2_0_Handle:libraries/base/GHC/IO/Handle/FD.hs:79:13-21 (5 samples, 2.08%)</title><rect x="49.3" y="821" width="24.6" height="15.0" fill="rgb(0,209,56)" rx="2" ry="2" />
+<text text-anchor="" x="52.33" y="831.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >C..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>THUNK_1_0_Int:test-progs/LazyThunk.hs:12:53-57 (1 samples, 0.42%)</title><rect x="1086.8" y="341" width="4.9" height="15.0" fill="rgb(0,205,98)" rx="2" ry="2" />
+<text text-anchor="" x="1089.75" y="351.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (9 samples, 3.75%)</title><rect x="359.1" y="805" width="44.2" height="15.0" fill="rgb(0,204,159)" rx="2" ry="2" />
+<text text-anchor="" x="362.08" y="815.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >CONS..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (2 samples, 0.83%)</title><rect x="408.2" y="549" width="9.9" height="15.0" fill="rgb(0,229,8)" rx="2" ry="2" />
+<text text-anchor="" x="411.25" y="559.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_MVar:libraries/base/GHC/Event/Manager.hs:186:42-48 (34 samples, 14.17%)</title><rect x="899.9" y="805" width="167.2" height="15.0" fill="rgb(0,212,36)" rx="2" ry="2" />
+<text text-anchor="" x="902.92" y="815.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >CONSTR_1_0_MVar:libra..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_2_0_: (4 samples, 1.67%)</title><rect x="260.8" y="725" width="19.6" height="15.0" fill="rgb(0,194,31)" rx="2" ry="2" />
+<text text-anchor="" x="263.75" y="735.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (1 samples, 0.42%)</title><rect x="398.4" y="629" width="4.9" height="15.0" fill="rgb(0,220,209)" rx="2" ry="2" />
+<text text-anchor="" x="401.42" y="639.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (8 samples, 3.33%)</title><rect x="506.6" y="869" width="39.3" height="15.0" fill="rgb(0,199,39)" rx="2" ry="2" />
+<text text-anchor="" x="509.58" y="879.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >CON..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>FUN_1_1_Fd -&gt; Event -&gt; IO ():libraries/base/GHC/Event/TimerManager.hs:170:46-69 (1 samples, 0.42%)</title><rect x="654.1" y="853" width="4.9" height="15.0" fill="rgb(0,220,83)" rx="2" ry="2" />
+<text text-anchor="" x="657.08" y="863.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>THUNK_1_0_Int:test-progs/LazyThunk.hs:12:53-57 (1 samples, 0.42%)</title><rect x="1086.8" y="373" width="4.9" height="15.0" fill="rgb(0,238,137)" rx="2" ry="2" />
+<text text-anchor="" x="1089.75" y="383.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (4 samples, 1.67%)</title><rect x="486.9" y="837" width="19.7" height="15.0" fill="rgb(0,227,184)" rx="2" ry="2" />
+<text text-anchor="" x="489.92" y="847.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (1 samples, 0.42%)</title><rect x="811.4" y="789" width="4.9" height="15.0" fill="rgb(0,223,155)" rx="2" ry="2" />
+<text text-anchor="" x="814.42" y="799.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_2_0_Handle:libraries/base/GHC/IO/Handle/FD.hs:68:13-21 (8 samples, 3.33%)</title><rect x="78.8" y="837" width="39.4" height="15.0" fill="rgb(0,200,85)" rx="2" ry="2" />
+<text text-anchor="" x="81.83" y="847.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >CON..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_2_0_: (1 samples, 0.42%)</title><rect x="624.6" y="837" width="4.9" height="15.0" fill="rgb(0,197,170)" rx="2" ry="2" />
+<text text-anchor="" x="627.58" y="847.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (2 samples, 0.83%)</title><rect x="408.2" y="581" width="9.9" height="15.0" fill="rgb(0,227,78)" rx="2" ry="2" />
+<text text-anchor="" x="411.25" y="591.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_STArray:libraries/base/GHC/Event/Thread.hs:197:41-51 (7 samples, 2.92%)</title><rect x="427.9" y="709" width="34.4" height="15.0" fill="rgb(0,237,136)" rx="2" ry="2" />
+<text text-anchor="" x="430.92" y="719.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >CO..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_2_0_ForeignPtrContents:libraries/base/GHC/IO/Handle/Text.hs:658:56-66 (1 samples, 0.42%)</title><rect x="98.5" y="741" width="4.9" height="15.0" fill="rgb(0,198,5)" rx="2" ry="2" />
+<text text-anchor="" x="101.50" y="751.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (5 samples, 2.08%)</title><rect x="359.1" y="773" width="24.6" height="15.0" fill="rgb(0,222,93)" rx="2" ry="2" />
+<text text-anchor="" x="362.08" y="783.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >C..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (10 samples, 4.17%)</title><rect x="260.8" y="869" width="49.1" height="15.0" fill="rgb(0,222,130)" rx="2" ry="2" />
+<text text-anchor="" x="263.75" y="879.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >CONS..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>THUNK_1_0_Int:test-progs/LazyThunk.hs:12:53-57 (1 samples, 0.42%)</title><rect x="1086.8" y="69" width="4.9" height="15.0" fill="rgb(0,208,168)" rx="2" ry="2" />
+<text text-anchor="" x="1089.75" y="79.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>FUN_1_0_Buffer Word8 -&gt; Buffer Char -&gt; IO (Buffer Word8, Buffer Char):libraries/base/GHC/IO/Encoding/UTF8.hs:57:39-41 (1 samples, 0.42%)</title><rect x="698.3" y="805" width="4.9" height="15.0" fill="rgb(0,215,49)" rx="2" ry="2" />
+<text text-anchor="" x="701.33" y="815.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>THUNK_1_0_Int:test-progs/LazyThunk.hs:12:53-57 (1 samples, 0.42%)</title><rect x="1086.8" y="661" width="4.9" height="15.0" fill="rgb(0,202,172)" rx="2" ry="2" />
+<text text-anchor="" x="1089.75" y="671.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_2_0_: (1 samples, 0.42%)</title><rect x="580.3" y="757" width="4.9" height="15.0" fill="rgb(0,219,58)" rx="2" ry="2" />
+<text text-anchor="" x="583.33" y="767.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (2 samples, 0.83%)</title><rect x="408.2" y="725" width="9.9" height="15.0" fill="rgb(0,200,41)" rx="2" ry="2" />
+<text text-anchor="" x="411.25" y="735.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (2 samples, 0.83%)</title><rect x="280.4" y="693" width="9.8" height="15.0" fill="rgb(0,239,95)" rx="2" ry="2" />
+<text text-anchor="" x="283.42" y="703.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (3 samples, 1.25%)</title><rect x="403.3" y="789" width="14.8" height="15.0" fill="rgb(0,220,86)" rx="2" ry="2" />
+<text text-anchor="" x="406.33" y="799.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (2 samples, 0.83%)</title><rect x="10.0" y="821" width="9.8" height="15.0" fill="rgb(0,204,106)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="831.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>State# RealWorld -&gt; Int32# -&gt; String -&gt; (# State# RealWorld, a #): (1 samples, 0.42%)</title><rect x="629.5" y="885" width="4.9" height="15.0" fill="rgb(0,190,56)" rx="2" ry="2" />
+<text text-anchor="" x="632.50" y="895.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (2 samples, 0.83%)</title><rect x="418.1" y="757" width="9.8" height="15.0" fill="rgb(0,217,117)" rx="2" ry="2" />
+<text text-anchor="" x="421.08" y="767.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>THUNK_1_0_Int:test-progs/LazyThunk.hs:12:53-57 (1 samples, 0.42%)</title><rect x="1086.8" y="261" width="4.9" height="15.0" fill="rgb(0,199,76)" rx="2" ry="2" />
+<text text-anchor="" x="1089.75" y="271.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>WEAK_: (1 samples, 0.42%)</title><rect x="1185.1" y="885" width="4.9" height="15.0" fill="rgb(0,219,10)" rx="2" ry="2" />
+<text text-anchor="" x="1188.08" y="895.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_Buffer:libraries/base/GHC/IO/FD.hs:149:65-66 (1 samples, 0.42%)</title><rect x="64.1" y="757" width="4.9" height="15.0" fill="rgb(0,227,40)" rx="2" ry="2" />
+<text text-anchor="" x="67.08" y="767.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (2 samples, 0.83%)</title><rect x="280.4" y="709" width="9.8" height="15.0" fill="rgb(0,238,89)" rx="2" ry="2" />
+<text text-anchor="" x="283.42" y="719.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_2_0_: (2 samples, 0.83%)</title><rect x="10.0" y="725" width="9.8" height="15.0" fill="rgb(0,218,116)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="735.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>MUT_VAR_DIRTY_: (1 samples, 0.42%)</title><rect x="580.3" y="709" width="4.9" height="15.0" fill="rgb(0,212,61)" rx="2" ry="2" />
+<text text-anchor="" x="583.33" y="719.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>THUNK_1_0_Int:test-progs/LazyThunk.hs:12:53-57 (1 samples, 0.42%)</title><rect x="1086.8" y="357" width="4.9" height="15.0" fill="rgb(0,196,22)" rx="2" ry="2" />
+<text text-anchor="" x="1089.75" y="367.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_: (2 samples, 0.83%)</title><rect x="516.4" y="789" width="9.8" height="15.0" fill="rgb(0,214,4)" rx="2" ry="2" />
+<text text-anchor="" x="519.42" y="799.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>MUT_VAR_CLEAN_: (1 samples, 0.42%)</title><rect x="831.1" y="821" width="4.9" height="15.0" fill="rgb(0,198,48)" rx="2" ry="2" />
+<text text-anchor="" x="834.08" y="831.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (2 samples, 0.83%)</title><rect x="408.2" y="565" width="9.9" height="15.0" fill="rgb(0,219,96)" rx="2" ry="2" />
+<text text-anchor="" x="411.25" y="575.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (5 samples, 2.08%)</title><rect x="359.1" y="757" width="24.6" height="15.0" fill="rgb(0,237,154)" rx="2" ry="2" />
+<text text-anchor="" x="362.08" y="767.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >C..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (4 samples, 1.67%)</title><rect x="595.1" y="709" width="19.7" height="15.0" fill="rgb(0,190,106)" rx="2" ry="2" />
+<text text-anchor="" x="598.08" y="719.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (2 samples, 0.83%)</title><rect x="408.2" y="709" width="9.9" height="15.0" fill="rgb(0,213,100)" rx="2" ry="2" />
+<text text-anchor="" x="411.25" y="719.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (6 samples, 2.50%)</title><rect x="1155.6" y="805" width="29.5" height="15.0" fill="rgb(0,196,26)" rx="2" ry="2" />
+<text text-anchor="" x="1158.58" y="815.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >CO..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_IODevice:libraries/base/GHC/IO/FD.hs:129:3-47 (12 samples, 5.00%)</title><rect x="757.3" y="821" width="59.0" height="15.0" fill="rgb(0,233,125)" rx="2" ry="2" />
+<text text-anchor="" x="760.33" y="831.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >CONSTR..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_2_0_: (2 samples, 0.83%)</title><rect x="418.1" y="709" width="9.8" height="15.0" fill="rgb(0,219,45)" rx="2" ry="2" />
+<text text-anchor="" x="421.08" y="719.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (10 samples, 4.17%)</title><rect x="260.8" y="805" width="49.1" height="15.0" fill="rgb(0,235,188)" rx="2" ry="2" />
+<text text-anchor="" x="263.75" y="815.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >CONS..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>MUT_VAR_CLEAN_: (1 samples, 0.42%)</title><rect x="457.4" y="629" width="4.9" height="15.0" fill="rgb(0,201,176)" rx="2" ry="2" />
+<text text-anchor="" x="460.42" y="639.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>MUT_VAR_CLEAN_: (1 samples, 0.42%)</title><rect x="895.0" y="805" width="4.9" height="15.0" fill="rgb(0,205,187)" rx="2" ry="2" />
+<text text-anchor="" x="898.00" y="815.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>-&gt; (# State# RealWorld, () #):libraries/base/GHC/Event/Array.hs:(211,1)-(225,14) (9 samples, 3.75%)</title><rect x="211.6" y="885" width="44.2" height="15.0" fill="rgb(0,212,107)" rx="2" ry="2" />
+<text text-anchor="" x="214.58" y="895.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >-&gt; (..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (2 samples, 0.83%)</title><rect x="408.2" y="629" width="9.9" height="15.0" fill="rgb(0,222,6)" rx="2" ry="2" />
+<text text-anchor="" x="411.25" y="639.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>FUN_STATIC_: (3 samples, 1.25%)</title><rect x="290.2" y="709" width="14.8" height="15.0" fill="rgb(0,197,30)" rx="2" ry="2" />
+<text text-anchor="" x="293.25" y="719.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (2 samples, 0.83%)</title><rect x="10.0" y="837" width="9.8" height="15.0" fill="rgb(0,229,195)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="847.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (2 samples, 0.83%)</title><rect x="10.0" y="805" width="9.8" height="15.0" fill="rgb(0,207,129)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="815.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (1 samples, 0.42%)</title><rect x="550.8" y="869" width="5.0" height="15.0" fill="rgb(0,224,66)" rx="2" ry="2" />
+<text text-anchor="" x="553.83" y="879.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>-&gt; Addr# -&gt; State# RealWorld -&gt; (# State# RealWorld, String #):libraries/base/GHC/Foreign.hs:(87,1)-(89,47) (1 samples, 0.42%)</title><rect x="545.9" y="885" width="4.9" height="15.0" fill="rgb(0,210,151)" rx="2" ry="2" />
+<text text-anchor="" x="548.92" y="895.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>IND_STATIC_: (5 samples, 2.08%)</title><rect x="462.3" y="869" width="24.6" height="15.0" fill="rgb(0,209,15)" rx="2" ry="2" />
+<text text-anchor="" x="465.33" y="879.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >I..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (2 samples, 0.83%)</title><rect x="408.2" y="597" width="9.9" height="15.0" fill="rgb(0,238,139)" rx="2" ry="2" />
+<text text-anchor="" x="411.25" y="607.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_2_0_: (1 samples, 0.42%)</title><rect x="550.8" y="821" width="5.0" height="15.0" fill="rgb(0,222,52)" rx="2" ry="2" />
+<text text-anchor="" x="553.83" y="831.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_Handle__:libraries/base/GHC/IO/Handle/Internals.hs:696:39-48 (4 samples, 1.67%)</title><rect x="54.2" y="789" width="19.7" height="15.0" fill="rgb(0,221,30)" rx="2" ry="2" />
+<text text-anchor="" x="57.25" y="799.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>FUN_STATIC_FD -&gt; Bool -&gt; State# RealWorld -&gt; (# State# RealWorld, () #):libraries/base/GHC/IO/FD.hs:130:3-47 (1 samples, 0.42%)</title><rect x="791.8" y="805" width="4.9" height="15.0" fill="rgb(0,221,190)" rx="2" ry="2" />
+<text text-anchor="" x="794.75" y="815.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>MUT_ARR_PTRS_CLEAN_: (2 samples, 0.83%)</title><rect x="1057.2" y="725" width="9.9" height="15.0" fill="rgb(0,235,96)" rx="2" ry="2" />
+<text text-anchor="" x="1060.25" y="735.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_2_0_: (1 samples, 0.42%)</title><rect x="295.2" y="677" width="4.9" height="15.0" fill="rgb(0,209,8)" rx="2" ry="2" />
+<text text-anchor="" x="298.17" y="687.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_2_0_: (4 samples, 1.67%)</title><rect x="29.7" y="741" width="19.6" height="15.0" fill="rgb(0,205,36)" rx="2" ry="2" />
+<text text-anchor="" x="32.67" y="751.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_Buffer:libraries/base/GHC/IO/Handle/Internals.hs:(537,20)-(539,52) (2 samples, 0.83%)</title><rect x="103.4" y="773" width="9.8" height="15.0" fill="rgb(0,238,185)" rx="2" ry="2" />
+<text text-anchor="" x="106.42" y="783.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (10 samples, 4.17%)</title><rect x="260.8" y="821" width="49.1" height="15.0" fill="rgb(0,237,203)" rx="2" ry="2" />
+<text text-anchor="" x="263.75" y="831.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >CONS..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>THUNK_1_0_Int:test-progs/LazyThunk.hs:12:53-57 (1 samples, 0.42%)</title><rect x="1086.8" y="821" width="4.9" height="15.0" fill="rgb(0,194,169)" rx="2" ry="2" />
+<text text-anchor="" x="1089.75" y="831.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (2 samples, 0.83%)</title><rect x="10.0" y="789" width="9.8" height="15.0" fill="rgb(0,227,15)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="799.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>THUNK_1_0_Int:test-progs/LazyThunk.hs:12:53-57 (1 samples, 0.42%)</title><rect x="1086.8" y="117" width="4.9" height="15.0" fill="rgb(0,201,111)" rx="2" ry="2" />
+<text text-anchor="" x="1089.75" y="127.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_BufferCodec:libraries/base/GHC/IO/Encoding/UTF8.hs:66:25-35 (2 samples, 0.83%)</title><rect x="1140.8" y="805" width="9.9" height="15.0" fill="rgb(0,206,55)" rx="2" ry="2" />
+<text text-anchor="" x="1143.83" y="815.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_: (4 samples, 1.67%)</title><rect x="506.6" y="821" width="19.6" height="15.0" fill="rgb(0,204,49)" rx="2" ry="2" />
+<text text-anchor="" x="509.58" y="831.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_TimerManager:libraries/base/GHC/Event/TimerManager.hs:(119,13)-(124,26) (2 samples, 0.83%)</title><rect x="565.6" y="837" width="9.8" height="15.0" fill="rgb(0,217,83)" rx="2" ry="2" />
+<text text-anchor="" x="568.58" y="847.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (4 samples, 1.67%)</title><rect x="595.1" y="741" width="19.7" height="15.0" fill="rgb(0,212,203)" rx="2" ry="2" />
+<text text-anchor="" x="598.08" y="751.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>FUN_STATIC_Bool -&gt; State# RealWorld -&gt; (# State# RealWorld, Control #):libraries/base/GHC/Event/Control.hs:(87,1)-(119,12) (3 samples, 1.25%)</title><rect x="290.2" y="725" width="14.8" height="15.0" fill="rgb(0,232,120)" rx="2" ry="2" />
+<text text-anchor="" x="293.25" y="735.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (2 samples, 0.83%)</title><rect x="270.6" y="629" width="9.8" height="15.0" fill="rgb(0,204,139)" rx="2" ry="2" />
+<text text-anchor="" x="273.58" y="639.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>TSO_: (110 samples, 45.83%)</title><rect x="644.2" y="869" width="540.9" height="15.0" fill="rgb(0,200,58)" rx="2" ry="2" />
+<text text-anchor="" x="647.25" y="879.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >TSO_:</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (2 samples, 0.83%)</title><rect x="280.4" y="725" width="9.8" height="15.0" fill="rgb(0,196,1)" rx="2" ry="2" />
+<text text-anchor="" x="283.42" y="735.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_Buffer:libraries/base/GHC/Foreign.hs:231:20-71 (1 samples, 0.42%)</title><rect x="1121.2" y="821" width="4.9" height="15.0" fill="rgb(0,222,122)" rx="2" ry="2" />
+<text text-anchor="" x="1124.17" y="831.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (1 samples, 0.42%)</title><rect x="796.7" y="789" width="4.9" height="15.0" fill="rgb(0,205,141)" rx="2" ry="2" />
+<text text-anchor="" x="799.67" y="799.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_2_0_: (4 samples, 1.67%)</title><rect x="260.8" y="741" width="19.6" height="15.0" fill="rgb(0,224,132)" rx="2" ry="2" />
+<text text-anchor="" x="263.75" y="751.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (2 samples, 0.83%)</title><rect x="408.2" y="693" width="9.9" height="15.0" fill="rgb(0,219,147)" rx="2" ry="2" />
+<text text-anchor="" x="411.25" y="703.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (9 samples, 3.75%)</title><rect x="359.1" y="821" width="44.2" height="15.0" fill="rgb(0,230,113)" rx="2" ry="2" />
+<text text-anchor="" x="362.08" y="831.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >CONS..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_2_0_[]:libraries/base/GHC/Foreign.hs:209:42-58 (4 samples, 1.67%)</title><rect x="865.5" y="709" width="19.7" height="15.0" fill="rgb(0,216,162)" rx="2" ry="2" />
+<text text-anchor="" x="868.50" y="719.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_2_0_(,):libraries/base/GHC/TopHandler.hs:(110,1)-(116,12) (1 samples, 0.42%)</title><rect x="560.7" y="805" width="4.9" height="15.0" fill="rgb(0,200,30)" rx="2" ry="2" />
+<text text-anchor="" x="563.67" y="815.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_IOException:libraries/base/Foreign/Marshal/Alloc.hs:223:41-55 (4 samples, 1.67%)</title><rect x="526.2" y="821" width="19.7" height="15.0" fill="rgb(0,215,165)" rx="2" ry="2" />
+<text text-anchor="" x="529.25" y="831.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>FUN_STATIC_forall {e}. Typeable e =&gt; e -&gt; Maybe AsyncException:libraries/base/GHC/IO/Exception.hs:236:3-45 (2 samples, 0.83%)</title><rect x="1175.2" y="693" width="9.9" height="15.0" fill="rgb(0,195,181)" rx="2" ry="2" />
+<text text-anchor="" x="1178.25" y="703.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>IND_STATIC_: (8 samples, 3.33%)</title><rect x="78.8" y="853" width="39.4" height="15.0" fill="rgb(0,199,91)" rx="2" ry="2" />
+<text text-anchor="" x="81.83" y="863.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >IND..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>THUNK_1_0_Int:test-progs/LazyThunk.hs:12:53-57 (1 samples, 0.42%)</title><rect x="1086.8" y="709" width="4.9" height="15.0" fill="rgb(0,238,30)" rx="2" ry="2" />
+<text text-anchor="" x="1089.75" y="719.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>THUNK_1_0_Int:test-progs/LazyThunk.hs:12:53-57 (1 samples, 0.42%)</title><rect x="1086.8" y="213" width="4.9" height="15.0" fill="rgb(0,192,176)" rx="2" ry="2" />
+<text text-anchor="" x="1089.75" y="223.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>FUN_STATIC_Control -&gt; State# RealWorld -&gt; (# State# RealWorld, () #):libraries/base/GHC/Event/Control.hs:(202,1)-(209,44) (1 samples, 0.42%)</title><rect x="550.8" y="805" width="5.0" height="15.0" fill="rgb(0,221,188)" rx="2" ry="2" />
+<text text-anchor="" x="553.83" y="815.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>THUNK_1_0_Int:test-progs/LazyThunk.hs:12:53-57 (1 samples, 0.42%)</title><rect x="1086.8" y="485" width="4.9" height="15.0" fill="rgb(0,190,181)" rx="2" ry="2" />
+<text text-anchor="" x="1089.75" y="495.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>MUT_VAR_CLEAN_: (2 samples, 0.83%)</title><rect x="565.6" y="869" width="9.8" height="15.0" fill="rgb(0,223,72)" rx="2" ry="2" />
+<text text-anchor="" x="568.58" y="879.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_2_0_: (1 samples, 0.42%)</title><rect x="521.3" y="773" width="4.9" height="15.0" fill="rgb(0,237,45)" rx="2" ry="2" />
+<text text-anchor="" x="524.33" y="783.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_Maybe:libraries/base/GHC/Event/Thread.hs:278:9-55 (5 samples, 2.08%)</title><rect x="437.8" y="677" width="24.5" height="15.0" fill="rgb(0,232,48)" rx="2" ry="2" />
+<text text-anchor="" x="440.75" y="687.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >C..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>FUN_STATIC_FD -&gt; State# RealWorld -&gt; (# State# RealWorld, Integer #):libraries/base/GHC/IO/FD.hs:128:3-47 (1 samples, 0.42%)</title><rect x="811.4" y="805" width="4.9" height="15.0" fill="rgb(0,227,71)" rx="2" ry="2" />
+<text text-anchor="" x="814.42" y="815.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (1 samples, 0.42%)</title><rect x="378.8" y="629" width="4.9" height="15.0" fill="rgb(0,233,38)" rx="2" ry="2" />
+<text text-anchor="" x="381.75" y="639.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_2_0_(,):libraries/base/GHC/Event/Thread.hs:278:9-55 (5 samples, 2.08%)</title><rect x="437.8" y="661" width="24.5" height="15.0" fill="rgb(0,208,185)" rx="2" ry="2" />
+<text text-anchor="" x="440.75" y="671.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >C..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (10 samples, 4.17%)</title><rect x="354.2" y="853" width="49.1" height="15.0" fill="rgb(0,224,38)" rx="2" ry="2" />
+<text text-anchor="" x="357.17" y="863.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >CONS..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>THUNK_1_0_Int:test-progs/LazyThunk.hs:12:53-57 (1 samples, 0.42%)</title><rect x="1086.8" y="149" width="4.9" height="15.0" fill="rgb(0,215,202)" rx="2" ry="2" />
+<text text-anchor="" x="1089.75" y="159.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_EventManager:libraries/base/GHC/Event/Manager.hs:(196,13)-(202,26) (5 samples, 2.08%)</title><rect x="437.8" y="645" width="24.5" height="15.0" fill="rgb(0,215,196)" rx="2" ry="2" />
+<text text-anchor="" x="440.75" y="655.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >C..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (2 samples, 0.83%)</title><rect x="393.5" y="741" width="9.8" height="15.0" fill="rgb(0,233,113)" rx="2" ry="2" />
+<text text-anchor="" x="396.50" y="751.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (2 samples, 0.83%)</title><rect x="408.2" y="757" width="9.9" height="15.0" fill="rgb(0,224,44)" rx="2" ry="2" />
+<text text-anchor="" x="411.25" y="767.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>MUT_VAR_CLEAN_: (1 samples, 0.42%)</title><rect x="663.9" y="837" width="4.9" height="15.0" fill="rgb(0,209,68)" rx="2" ry="2" />
+<text text-anchor="" x="666.92" y="847.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>MVAR_CLEAN_: (2 samples, 0.83%)</title><rect x="555.8" y="869" width="9.8" height="15.0" fill="rgb(0,228,159)" rx="2" ry="2" />
+<text text-anchor="" x="558.75" y="879.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (5 samples, 2.08%)</title><rect x="359.1" y="725" width="24.6" height="15.0" fill="rgb(0,226,77)" rx="2" ry="2" />
+<text text-anchor="" x="362.08" y="735.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >C..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>THUNK_1_0_Int:test-progs/LazyThunk.hs:12:53-57 (1 samples, 0.42%)</title><rect x="1086.8" y="293" width="4.9" height="15.0" fill="rgb(0,192,54)" rx="2" ry="2" />
+<text text-anchor="" x="1089.75" y="303.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (12 samples, 5.00%)</title><rect x="403.3" y="821" width="59.0" height="15.0" fill="rgb(0,220,102)" rx="2" ry="2" />
+<text text-anchor="" x="406.33" y="831.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >CONSTR..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_2_0_: (1 samples, 0.42%)</title><rect x="806.5" y="789" width="4.9" height="15.0" fill="rgb(0,210,153)" rx="2" ry="2" />
+<text text-anchor="" x="809.50" y="799.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_ForeignPtrContents:libraries/base/GHC/Event/Array.hs:79:18-29 (1 samples, 0.42%)</title><rect x="649.2" y="853" width="4.9" height="15.0" fill="rgb(0,195,67)" rx="2" ry="2" />
+<text text-anchor="" x="652.17" y="863.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (2 samples, 0.83%)</title><rect x="393.5" y="709" width="9.8" height="15.0" fill="rgb(0,213,39)" rx="2" ry="2" />
+<text text-anchor="" x="396.50" y="719.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (6 samples, 2.50%)</title><rect x="590.2" y="805" width="29.5" height="15.0" fill="rgb(0,212,24)" rx="2" ry="2" />
+<text text-anchor="" x="593.17" y="815.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >CO..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (1 samples, 0.42%)</title><rect x="624.6" y="869" width="4.9" height="15.0" fill="rgb(0,233,168)" rx="2" ry="2" />
+<text text-anchor="" x="627.58" y="879.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (4 samples, 1.67%)</title><rect x="260.8" y="757" width="19.6" height="15.0" fill="rgb(0,200,208)" rx="2" ry="2" />
+<text text-anchor="" x="263.75" y="767.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (5 samples, 2.08%)</title><rect x="359.1" y="741" width="24.6" height="15.0" fill="rgb(0,237,65)" rx="2" ry="2" />
+<text text-anchor="" x="362.08" y="751.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >C..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_MVar:libraries/base/GHC/Conc/Signal.hs:(90,1)-(98,64) (2 samples, 0.83%)</title><rect x="555.8" y="885" width="9.8" height="15.0" fill="rgb(0,233,187)" rx="2" ry="2" />
+<text text-anchor="" x="558.75" y="895.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (2 samples, 0.83%)</title><rect x="408.2" y="677" width="9.9" height="15.0" fill="rgb(0,207,159)" rx="2" ry="2" />
+<text text-anchor="" x="411.25" y="687.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_2_0_ForeignPtrContents:libraries/base/GHC/IO/Handle/Internals.hs:680:38-46 (1 samples, 0.42%)</title><rect x="69.0" y="741" width="4.9" height="15.0" fill="rgb(0,225,116)" rx="2" ry="2" />
+<text text-anchor="" x="72.00" y="751.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_: (2 samples, 0.83%)</title><rect x="393.5" y="693" width="9.8" height="15.0" fill="rgb(0,237,137)" rx="2" ry="2" />
+<text text-anchor="" x="396.50" y="703.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_2_0_: (3 samples, 1.25%)</title><rect x="1170.3" y="709" width="14.8" height="15.0" fill="rgb(0,226,65)" rx="2" ry="2" />
+<text text-anchor="" x="1173.33" y="719.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>THUNK_1_0_Int:test-progs/LazyThunk.hs:12:53-57 (1 samples, 0.42%)</title><rect x="1086.8" y="725" width="4.9" height="15.0" fill="rgb(0,203,109)" rx="2" ry="2" />
+<text text-anchor="" x="1089.75" y="735.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>FUN_STATIC_EventManager -&gt; State# RealWorld -&gt; (# State# RealWorld, () #):libraries/base/GHC/Event/Manager.hs:(254,1)-(277,36) (2 samples, 0.83%)</title><rect x="270.6" y="693" width="9.8" height="15.0" fill="rgb(0,226,48)" rx="2" ry="2" />
+<text text-anchor="" x="273.58" y="703.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>THUNK_1_0_Int:test-progs/LazyThunk.hs:12:53-57 (1 samples, 0.42%)</title><rect x="1086.8" y="773" width="4.9" height="15.0" fill="rgb(0,234,126)" rx="2" ry="2" />
+<text text-anchor="" x="1089.75" y="783.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>FUN_STATIC_String -&gt; Int32# -&gt; Maybe Handle -&gt; Maybe String -&gt; IOError:libraries/base/Foreign/C/Error.hs:(472,1)-(577,47) (1 samples, 0.42%)</title><rect x="629.5" y="869" width="4.9" height="15.0" fill="rgb(0,222,141)" rx="2" ry="2" />
+<text text-anchor="" x="632.50" y="879.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (4 samples, 1.67%)</title><rect x="486.9" y="869" width="19.7" height="15.0" fill="rgb(0,209,38)" rx="2" ry="2" />
+<text text-anchor="" x="489.92" y="879.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (1 samples, 0.42%)</title><rect x="1180.2" y="677" width="4.9" height="15.0" fill="rgb(0,228,54)" rx="2" ry="2" />
+<text text-anchor="" x="1183.17" y="687.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (5 samples, 2.08%)</title><rect x="359.1" y="693" width="24.6" height="15.0" fill="rgb(0,194,7)" rx="2" ry="2" />
+<text text-anchor="" x="362.08" y="703.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >C..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (10 samples, 4.17%)</title><rect x="260.8" y="853" width="49.1" height="15.0" fill="rgb(0,212,175)" rx="2" ry="2" />
+<text text-anchor="" x="263.75" y="863.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >CONS..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_2_0_ForeignPtrContents:libraries/base/GHC/IO/FD.hs:146:63-84 (1 samples, 0.42%)</title><rect x="64.1" y="741" width="4.9" height="15.0" fill="rgb(0,197,15)" rx="2" ry="2" />
+<text text-anchor="" x="67.08" y="751.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (12 samples, 5.00%)</title><rect x="403.3" y="837" width="59.0" height="15.0" fill="rgb(0,222,2)" rx="2" ry="2" />
+<text text-anchor="" x="406.33" y="847.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >CONSTR..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (2 samples, 0.83%)</title><rect x="408.2" y="741" width="9.9" height="15.0" fill="rgb(0,235,113)" rx="2" ry="2" />
+<text text-anchor="" x="411.25" y="751.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_2_0_IT:libraries/base/GHC/Event/Manager.hs:186:41-62 (34 samples, 14.17%)</title><rect x="899.9" y="741" width="167.2" height="15.0" fill="rgb(0,213,102)" rx="2" ry="2" />
+<text text-anchor="" x="902.92" y="751.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >CONSTR_2_0_IT:librari..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>IND_STATIC_: (7 samples, 2.92%)</title><rect x="427.9" y="757" width="34.4" height="15.0" fill="rgb(0,212,0)" rx="2" ry="2" />
+<text text-anchor="" x="430.92" y="767.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >IN..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>FUN_1_0_CStringLen -&gt; IO a:libraries/base/GHC/Foreign.hs:127:57-76 (1 samples, 0.42%)</title><rect x="1131.0" y="821" width="4.9" height="15.0" fill="rgb(0,236,193)" rx="2" ry="2" />
+<text text-anchor="" x="1134.00" y="831.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_Storable: (8 samples, 3.33%)</title><rect x="216.5" y="869" width="39.3" height="15.0" fill="rgb(0,226,188)" rx="2" ry="2" />
+<text text-anchor="" x="219.50" y="879.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >CON..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>FUN_STATIC_FD -&gt; FD -&gt; State# RealWorld -&gt; (# State# RealWorld, FD #):libraries/base/GHC/IO/FD.hs:135:3-41 (1 samples, 0.42%)</title><rect x="801.6" y="805" width="4.9" height="15.0" fill="rgb(0,194,47)" rx="2" ry="2" />
+<text text-anchor="" x="804.58" y="815.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (3 samples, 1.25%)</title><rect x="1170.3" y="725" width="14.8" height="15.0" fill="rgb(0,207,44)" rx="2" ry="2" />
+<text text-anchor="" x="1173.33" y="735.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_STArray:libraries/base/GHC/Conc/Signal.hs:35:1-11 (2 samples, 0.83%)</title><rect x="555.8" y="853" width="9.8" height="15.0" fill="rgb(0,204,179)" rx="2" ry="2" />
+<text text-anchor="" x="558.75" y="863.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>THUNK_1_0_Int:test-progs/LazyThunk.hs:12:53-57 (1 samples, 0.42%)</title><rect x="1086.8" y="581" width="4.9" height="15.0" fill="rgb(0,223,21)" rx="2" ry="2" />
+<text text-anchor="" x="1089.75" y="591.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_: (1 samples, 0.42%)</title><rect x="614.8" y="741" width="4.9" height="15.0" fill="rgb(0,198,119)" rx="2" ry="2" />
+<text text-anchor="" x="617.75" y="751.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_MVar:libraries/base/GHC/Event/Thread.hs:215:4-60 (1 samples, 0.42%)</title><rect x="585.2" y="837" width="5.0" height="15.0" fill="rgb(0,207,169)" rx="2" ry="2" />
+<text text-anchor="" x="588.25" y="847.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_2_0_[]:libraries/base/GHC/Foreign.hs:209:42-58 (6 samples, 2.50%)</title><rect x="855.7" y="741" width="29.5" height="15.0" fill="rgb(0,222,112)" rx="2" ry="2" />
+<text text-anchor="" x="858.67" y="751.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >CO..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_2_0_: (6 samples, 2.50%)</title><rect x="590.2" y="837" width="29.5" height="15.0" fill="rgb(0,198,41)" rx="2" ry="2" />
+<text text-anchor="" x="593.17" y="847.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >CO..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>MUT_VAR_CLEAN_: (4 samples, 1.67%)</title><rect x="98.5" y="789" width="19.7" height="15.0" fill="rgb(0,219,155)" rx="2" ry="2" />
+<text text-anchor="" x="101.50" y="799.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>FUN_STATIC_State# RealWorld -&gt; (# State# RealWorld, () #):libraries/base/GHC/Event/Thread.hs:(242,1)-(246,29) (3 samples, 1.25%)</title><rect x="575.4" y="869" width="14.8" height="15.0" fill="rgb(0,213,94)" rx="2" ry="2" />
+<text text-anchor="" x="578.42" y="879.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>-&gt; (# State# RealWorld, () #):libraries/base/GHC/Event/Thread.hs:(269,1)-(295,35) (11 samples, 4.58%)</title><rect x="255.8" y="885" width="54.1" height="15.0" fill="rgb(0,200,4)" rx="2" ry="2" />
+<text text-anchor="" x="258.83" y="895.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >-&gt; (#..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>THUNK_1_0_Int:test-progs/LazyThunk.hs:12:53-57 (1 samples, 0.42%)</title><rect x="1086.8" y="757" width="4.9" height="15.0" fill="rgb(0,199,181)" rx="2" ry="2" />
+<text text-anchor="" x="1089.75" y="767.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_2_0_ForeignPtrContents:libraries/base/GHC/IO/FD.hs:146:63-84 (1 samples, 0.42%)</title><rect x="108.3" y="757" width="4.9" height="15.0" fill="rgb(0,192,68)" rx="2" ry="2" />
+<text text-anchor="" x="111.33" y="767.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (2 samples, 0.83%)</title><rect x="270.6" y="709" width="9.8" height="15.0" fill="rgb(0,191,27)" rx="2" ry="2" />
+<text text-anchor="" x="273.58" y="719.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (5 samples, 2.08%)</title><rect x="359.1" y="789" width="24.6" height="15.0" fill="rgb(0,234,15)" rx="2" ry="2" />
+<text text-anchor="" x="362.08" y="799.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >C..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (4 samples, 1.67%)</title><rect x="29.7" y="789" width="19.6" height="15.0" fill="rgb(0,238,32)" rx="2" ry="2" />
+<text text-anchor="" x="32.67" y="799.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>FUN_STATIC_FD -&gt; Bool -&gt; State# RealWorld -&gt; (# State# RealWorld, () #):libraries/base/GHC/IO/FD.hs:132:3-45 (1 samples, 0.42%)</title><rect x="796.7" y="805" width="4.9" height="15.0" fill="rgb(0,213,71)" rx="2" ry="2" />
+<text text-anchor="" x="799.67" y="815.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (4 samples, 1.67%)</title><rect x="595.1" y="693" width="19.7" height="15.0" fill="rgb(0,236,27)" rx="2" ry="2" />
+<text text-anchor="" x="598.08" y="703.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (6 samples, 2.50%)</title><rect x="590.2" y="789" width="29.5" height="15.0" fill="rgb(0,232,72)" rx="2" ry="2" />
+<text text-anchor="" x="593.17" y="799.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >CO..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>FUN_STATIC_forall a. [Char] -&gt; a:libraries/base/GHC/Err.hs:47:1-56 (1 samples, 0.42%)</title><rect x="398.4" y="645" width="4.9" height="15.0" fill="rgb(0,202,6)" rx="2" ry="2" />
+<text text-anchor="" x="401.42" y="655.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (2 samples, 0.83%)</title><rect x="280.4" y="677" width="9.8" height="15.0" fill="rgb(0,226,9)" rx="2" ry="2" />
+<text text-anchor="" x="283.42" y="687.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_ForeignPtrContents:libraries/base/GHC/Event/KQueue.hsc:150:5-19 (1 samples, 0.42%)</title><rect x="895.0" y="757" width="4.9" height="15.0" fill="rgb(0,220,115)" rx="2" ry="2" />
+<text text-anchor="" x="898.00" y="767.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>      (CodingProgress, Buffer Word8, Buffer Char) #):libraries/base/GHC/IO/Encoding/UTF8.hs:(147,1)-(212,15) (2 samples, 0.83%)</title><rect x="10.0" y="885" width="9.8" height="15.0" fill="rgb(0,222,130)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="895.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (3 samples, 1.25%)</title><rect x="34.6" y="725" width="14.7" height="15.0" fill="rgb(0,223,2)" rx="2" ry="2" />
+<text text-anchor="" x="37.58" y="735.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_STRef:libraries/base/GHC/Event/Manager.hs:186:42-48 (34 samples, 14.17%)</title><rect x="899.9" y="773" width="167.2" height="15.0" fill="rgb(0,215,5)" rx="2" ry="2" />
+<text text-anchor="" x="902.92" y="783.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >CONSTR_1_0_STRef:libr..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>TSO_: (112 samples, 46.67%)</title><rect x="634.4" y="885" width="550.7" height="15.0" fill="rgb(0,213,42)" rx="2" ry="2" />
+<text text-anchor="" x="637.42" y="895.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >TSO_:</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_RawIO:libraries/base/GHC/IO/FD.hs:110:1-18 (3 samples, 1.25%)</title><rect x="816.3" y="821" width="14.8" height="15.0" fill="rgb(0,201,106)" rx="2" ry="2" />
+<text text-anchor="" x="819.33" y="831.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_2_0_: (2 samples, 0.83%)</title><rect x="575.4" y="853" width="9.8" height="15.0" fill="rgb(0,233,29)" rx="2" ry="2" />
+<text text-anchor="" x="578.42" y="863.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_2_0_: (1 samples, 0.42%)</title><rect x="44.4" y="661" width="4.9" height="15.0" fill="rgb(0,196,21)" rx="2" ry="2" />
+<text text-anchor="" x="47.42" y="671.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (2 samples, 0.83%)</title><rect x="408.2" y="645" width="9.9" height="15.0" fill="rgb(0,191,43)" rx="2" ry="2" />
+<text text-anchor="" x="411.25" y="655.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>-&gt; (# State# RealWorld, AC a #):libraries/base/GHC/Event/Array.hs:(167,1)-(175,26) (2 samples, 0.83%)</title><rect x="324.7" y="885" width="9.8" height="15.0" fill="rgb(0,193,142)" rx="2" ry="2" />
+<text text-anchor="" x="327.67" y="895.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (1 samples, 0.42%)</title><rect x="1180.2" y="661" width="4.9" height="15.0" fill="rgb(0,198,195)" rx="2" ry="2" />
+<text text-anchor="" x="1183.17" y="671.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>MUT_VAR_CLEAN_: (1 samples, 0.42%)</title><rect x="1081.8" y="837" width="5.0" height="15.0" fill="rgb(0,217,119)" rx="2" ry="2" />
+<text text-anchor="" x="1084.83" y="847.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_2_0_[]:libraries/base/GHC/Foreign.hs:209:42-58 (9 samples, 3.75%)</title><rect x="840.9" y="789" width="44.3" height="15.0" fill="rgb(0,216,163)" rx="2" ry="2" />
+<text text-anchor="" x="843.92" y="799.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >CONS..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>-&gt; (# State# RealWorld, Bool #):libraries/base/GHC/Event/Manager.hs:(380,1)-(397,17) (3 samples, 1.25%)</title><rect x="334.5" y="885" width="14.7" height="15.0" fill="rgb(0,202,18)" rx="2" ry="2" />
+<text text-anchor="" x="337.50" y="895.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>THUNK_1_0_Int:test-progs/LazyThunk.hs:12:53-57 (1 samples, 0.42%)</title><rect x="1086.8" y="437" width="4.9" height="15.0" fill="rgb(0,231,45)" rx="2" ry="2" />
+<text text-anchor="" x="1089.75" y="447.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_STRef:libraries/base/GHC/Event/Thread.hs:229:5-59 (2 samples, 0.83%)</title><rect x="565.6" y="885" width="9.8" height="15.0" fill="rgb(0,222,149)" rx="2" ry="2" />
+<text text-anchor="" x="568.58" y="895.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_: (6 samples, 2.50%)</title><rect x="590.2" y="773" width="29.5" height="15.0" fill="rgb(0,198,113)" rx="2" ry="2" />
+<text text-anchor="" x="593.17" y="783.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >CO..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (4 samples, 1.67%)</title><rect x="506.6" y="837" width="19.6" height="15.0" fill="rgb(0,223,166)" rx="2" ry="2" />
+<text text-anchor="" x="509.58" y="847.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (1 samples, 0.42%)</title><rect x="545.9" y="837" width="4.9" height="15.0" fill="rgb(0,207,178)" rx="2" ry="2" />
+<text text-anchor="" x="548.92" y="847.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_2_0_(,):libraries/base/GHC/IO/Handle/Internals.hs:676:29-64 (1 samples, 0.42%)</title><rect x="1081.8" y="821" width="5.0" height="15.0" fill="rgb(0,192,183)" rx="2" ry="2" />
+<text text-anchor="" x="1084.83" y="831.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (1 samples, 0.42%)</title><rect x="545.9" y="853" width="4.9" height="15.0" fill="rgb(0,228,61)" rx="2" ry="2" />
+<text text-anchor="" x="548.92" y="863.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>THUNK_1_0_Int:test-progs/LazyThunk.hs:12:53-57 (1 samples, 0.42%)</title><rect x="1086.8" y="133" width="4.9" height="15.0" fill="rgb(0,237,180)" rx="2" ry="2" />
+<text text-anchor="" x="1089.75" y="143.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>FUN_STATIC_FD -&gt; State# RealWorld -&gt; (# State# RealWorld, FD #):libraries/base/GHC/IO/FD.hs:134:3-39 (1 samples, 0.42%)</title><rect x="806.5" y="805" width="4.9" height="15.0" fill="rgb(0,224,52)" rx="2" ry="2" />
+<text text-anchor="" x="809.50" y="815.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>IND_STATIC_: (1 samples, 0.42%)</title><rect x="629.5" y="837" width="4.9" height="15.0" fill="rgb(0,196,109)" rx="2" ry="2" />
+<text text-anchor="" x="632.50" y="847.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (10 samples, 4.17%)</title><rect x="260.8" y="837" width="49.1" height="15.0" fill="rgb(0,234,207)" rx="2" ry="2" />
+<text text-anchor="" x="263.75" y="847.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >CONS..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>MVAR_CLEAN_: (1 samples, 0.42%)</title><rect x="585.2" y="821" width="5.0" height="15.0" fill="rgb(0,195,19)" rx="2" ry="2" />
+<text text-anchor="" x="588.25" y="831.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (1 samples, 0.42%)</title><rect x="801.6" y="789" width="4.9" height="15.0" fill="rgb(0,205,4)" rx="2" ry="2" />
+<text text-anchor="" x="804.58" y="799.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_2_0_[]:libraries/base/GHC/Event/Thread.hs:122:54-62 (1 samples, 0.42%)</title><rect x="1062.2" y="693" width="4.9" height="15.0" fill="rgb(0,231,113)" rx="2" ry="2" />
+<text text-anchor="" x="1065.17" y="703.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>MVAR_CLEAN_: (34 samples, 14.17%)</title><rect x="899.9" y="789" width="167.2" height="15.0" fill="rgb(0,233,7)" rx="2" ry="2" />
+<text text-anchor="" x="902.92" y="799.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >MVAR_CLEAN_:</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>FUN_STATIC_Int32# -&gt; IO ():libraries/base/GHC/Event/Manager.hs:391:37-51 (2 samples, 0.83%)</title><rect x="339.4" y="853" width="9.8" height="15.0" fill="rgb(0,208,119)" rx="2" ry="2" />
+<text text-anchor="" x="342.42" y="863.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_: (5 samples, 2.08%)</title><rect x="359.1" y="645" width="24.6" height="15.0" fill="rgb(0,206,10)" rx="2" ry="2" />
+<text text-anchor="" x="362.08" y="655.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >C..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_2_0_: (5 samples, 2.08%)</title><rect x="280.4" y="741" width="24.6" height="15.0" fill="rgb(0,227,119)" rx="2" ry="2" />
+<text text-anchor="" x="283.42" y="751.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >C..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>FUN_STATIC_Backend -&gt; State# RealWorld -&gt; (# State# RealWorld, EventManager #):libraries/base/GHC/Event/Manager.hs:(184,1)-(207,45) (5 samples, 2.08%)</title><rect x="280.4" y="757" width="24.6" height="15.0" fill="rgb(0,213,204)" rx="2" ry="2" />
+<text text-anchor="" x="283.42" y="767.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >F..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_2_0_: (1 samples, 0.42%)</title><rect x="73.9" y="837" width="4.9" height="15.0" fill="rgb(0,210,31)" rx="2" ry="2" />
+<text text-anchor="" x="76.92" y="847.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_2_0_ForeignPtrContents:libraries/base/GHC/IO/Handle/Internals.hs:679:45-53 (1 samples, 0.42%)</title><rect x="113.2" y="757" width="5.0" height="15.0" fill="rgb(0,191,100)" rx="2" ry="2" />
+<text text-anchor="" x="116.25" y="767.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (6 samples, 2.50%)</title><rect x="590.2" y="821" width="29.5" height="15.0" fill="rgb(0,203,176)" rx="2" ry="2" />
+<text text-anchor="" x="593.17" y="831.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >CO..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>FUN_1_0_Buffer Char -&gt; Buffer Word8 -&gt; IO (Buffer Char, Buffer Word8):libraries/base/GHC/IO/Encoding/UTF8.hs:67:39-41 (1 samples, 0.42%)</title><rect x="1126.1" y="821" width="4.9" height="15.0" fill="rgb(0,221,138)" rx="2" ry="2" />
+<text text-anchor="" x="1129.08" y="831.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (1 samples, 0.42%)</title><rect x="378.8" y="597" width="4.9" height="15.0" fill="rgb(0,226,170)" rx="2" ry="2" />
+<text text-anchor="" x="381.75" y="607.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (1 samples, 0.42%)</title><rect x="378.8" y="549" width="4.9" height="15.0" fill="rgb(0,238,96)" rx="2" ry="2" />
+<text text-anchor="" x="381.75" y="559.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>all (240 samples, 100%)</title><rect x="10.0" y="901" width="1180.0" height="15.0" fill="rgb(0,205,25)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="911.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>FUN_STATIC_IO ():libraries/base/GHC/Conc/IO.hs:74:1-57 (3 samples, 1.25%)</title><rect x="575.4" y="885" width="14.8" height="15.0" fill="rgb(0,197,177)" rx="2" ry="2" />
+<text text-anchor="" x="578.42" y="895.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_2_0_: (4 samples, 1.67%)</title><rect x="383.7" y="789" width="19.6" height="15.0" fill="rgb(0,216,42)" rx="2" ry="2" />
+<text text-anchor="" x="386.67" y="799.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>THUNK_1_0_Int:test-progs/LazyThunk.hs:12:53-57 (1 samples, 0.42%)</title><rect x="1086.8" y="517" width="4.9" height="15.0" fill="rgb(0,234,121)" rx="2" ry="2" />
+<text text-anchor="" x="1089.75" y="527.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>THUNK_1_0_Int:test-progs/LazyThunk.hs:12:53-57 (1 samples, 0.42%)</title><rect x="1086.8" y="421" width="4.9" height="15.0" fill="rgb(0,225,131)" rx="2" ry="2" />
+<text text-anchor="" x="1089.75" y="431.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_2_0_: (10 samples, 4.17%)</title><rect x="260.8" y="789" width="49.1" height="15.0" fill="rgb(0,229,2)" rx="2" ry="2" />
+<text text-anchor="" x="263.75" y="799.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >CONS..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>MUT_VAR_CLEAN_: (2 samples, 0.83%)</title><rect x="64.1" y="773" width="9.8" height="15.0" fill="rgb(0,216,96)" rx="2" ry="2" />
+<text text-anchor="" x="67.08" y="783.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>IND_STATIC_: (5 samples, 2.08%)</title><rect x="49.3" y="837" width="24.6" height="15.0" fill="rgb(0,199,23)" rx="2" ry="2" />
+<text text-anchor="" x="52.33" y="847.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >I..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_2_0_: (1 samples, 0.42%)</title><rect x="811.4" y="757" width="4.9" height="15.0" fill="rgb(0,214,188)" rx="2" ry="2" />
+<text text-anchor="" x="814.42" y="767.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_Maybe:libraries/base/GHC/TopHandler.hs:(110,1)-(116,12) (1 samples, 0.42%)</title><rect x="560.7" y="821" width="4.9" height="15.0" fill="rgb(0,212,102)" rx="2" ry="2" />
+<text text-anchor="" x="563.67" y="831.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_2_0_: (1 samples, 0.42%)</title><rect x="575.4" y="837" width="4.9" height="15.0" fill="rgb(0,196,167)" rx="2" ry="2" />
+<text text-anchor="" x="578.42" y="847.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_: (1 samples, 0.42%)</title><rect x="378.8" y="533" width="4.9" height="15.0" fill="rgb(0,215,24)" rx="2" ry="2" />
+<text text-anchor="" x="381.75" y="543.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (2 samples, 0.83%)</title><rect x="408.2" y="613" width="9.9" height="15.0" fill="rgb(0,210,169)" rx="2" ry="2" />
+<text text-anchor="" x="411.25" y="623.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>-&gt; (# State# RealWorld, (IODeviceType, CDev, CIno) #):libraries/base/System/Posix/Internals.hs:(110,1)-(117,23) (3 samples, 1.25%)</title><rect x="309.9" y="885" width="14.8" height="15.0" fill="rgb(0,219,143)" rx="2" ry="2" />
+<text text-anchor="" x="312.92" y="895.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_Buffer:libraries/base/GHC/IO/Handle/Internals.hs:680:38-46 (1 samples, 0.42%)</title><rect x="69.0" y="757" width="4.9" height="15.0" fill="rgb(0,233,187)" rx="2" ry="2" />
+<text text-anchor="" x="72.00" y="767.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_Handle__:libraries/base/GHC/IO/Handle/Internals.hs:696:39-48 (7 samples, 2.92%)</title><rect x="83.8" y="805" width="34.4" height="15.0" fill="rgb(0,228,145)" rx="2" ry="2" />
+<text text-anchor="" x="86.75" y="815.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >CO..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>FUN_1_0_IO a:libraries/base/GHC/IO/Encoding.hs:147:12-46 (1 samples, 0.42%)</title><rect x="629.5" y="821" width="4.9" height="15.0" fill="rgb(0,195,140)" rx="2" ry="2" />
+<text text-anchor="" x="632.50" y="831.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_Backend:libraries/base/GHC/Event/KQueue.hsc:83:3-11 (1 samples, 0.42%)</title><rect x="452.5" y="629" width="4.9" height="15.0" fill="rgb(0,198,27)" rx="2" ry="2" />
+<text text-anchor="" x="455.50" y="639.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>FUN_STATIC_State# RealWorld -&gt; (# State# RealWorld, () #): (1 samples, 0.42%)</title><rect x="550.8" y="789" width="5.0" height="15.0" fill="rgb(0,239,154)" rx="2" ry="2" />
+<text text-anchor="" x="553.83" y="799.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>THUNK_1_0_Int:test-progs/LazyThunk.hs:12:53-57 (1 samples, 0.42%)</title><rect x="1086.8" y="645" width="4.9" height="15.0" fill="rgb(0,226,80)" rx="2" ry="2" />
+<text text-anchor="" x="1089.75" y="655.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (1 samples, 0.42%)</title><rect x="545.9" y="869" width="4.9" height="15.0" fill="rgb(0,232,25)" rx="2" ry="2" />
+<text text-anchor="" x="548.92" y="879.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_Handle__:libraries/base/GHC/IO/Handle/Internals.hs:696:39-48 (20 samples, 8.33%)</title><rect x="742.6" y="837" width="98.3" height="15.0" fill="rgb(0,217,182)" rx="2" ry="2" />
+<text text-anchor="" x="745.58" y="847.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >CONSTR_Hand..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>THUNK_1_0_Int:test-progs/LazyThunk.hs:12:53-57 (1 samples, 0.42%)</title><rect x="1086.8" y="309" width="4.9" height="15.0" fill="rgb(0,222,2)" rx="2" ry="2" />
+<text text-anchor="" x="1089.75" y="319.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (1 samples, 0.42%)</title><rect x="329.6" y="869" width="4.9" height="15.0" fill="rgb(0,233,186)" rx="2" ry="2" />
+<text text-anchor="" x="332.58" y="879.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>-&gt; Int -&gt; State# RealWorld -&gt; (# State# RealWorld, ThreadId #):libraries/base/GHC/Event/Thread.hs:(260,1)-(264,10) (1 samples, 0.42%)</title><rect x="550.8" y="885" width="5.0" height="15.0" fill="rgb(0,234,32)" rx="2" ry="2" />
+<text text-anchor="" x="553.83" y="895.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_ForeignPtrContents:libraries/base/GHC/Foreign.hs:273:57-67 (1 samples, 0.42%)</title><rect x="1116.2" y="821" width="5.0" height="15.0" fill="rgb(0,203,48)" rx="2" ry="2" />
+<text text-anchor="" x="1119.25" y="831.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_Backend:libraries/base/GHC/Event/Poll.hsc:55:14-17 (1 samples, 0.42%)</title><rect x="570.5" y="821" width="4.9" height="15.0" fill="rgb(0,198,81)" rx="2" ry="2" />
+<text text-anchor="" x="573.50" y="831.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_2_0_[]:libraries/base/GHC/Foreign.hs:209:42-58 (7 samples, 2.92%)</title><rect x="850.8" y="757" width="34.4" height="15.0" fill="rgb(0,194,197)" rx="2" ry="2" />
+<text text-anchor="" x="853.75" y="767.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >CO..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (4 samples, 1.67%)</title><rect x="595.1" y="725" width="19.7" height="15.0" fill="rgb(0,205,161)" rx="2" ry="2" />
+<text text-anchor="" x="598.08" y="735.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>FUN_STATIC_SomeException -&gt; State# RealWorld -&gt; (# State# RealWorld, () #):libraries/base/GHC/Conc/Sync.hs:390:45-56 (7 samples, 2.92%)</title><rect x="1150.7" y="821" width="34.4" height="15.0" fill="rgb(0,208,165)" rx="2" ry="2" />
+<text text-anchor="" x="1153.67" y="831.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >FU..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>FUN_SomeException -&gt; State# RealWorld -&gt; (# State# RealWorld, Event #):libraries/base/GHC/Event/Thread.hs:123:36-56 (37 samples, 15.42%)</title><rect x="885.2" y="837" width="181.9" height="15.0" fill="rgb(0,190,39)" rx="2" ry="2" />
+<text text-anchor="" x="888.17" y="847.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >FUN_SomeException -&gt; St..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_BufferCodec:libraries/base/GHC/IO/Encoding/UTF8.hs:56:25-35 (1 samples, 0.42%)</title><rect x="698.3" y="821" width="4.9" height="15.0" fill="rgb(0,205,177)" rx="2" ry="2" />
+<text text-anchor="" x="701.33" y="831.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_1_ForeignPtr: (1 samples, 0.42%)</title><rect x="98.5" y="757" width="4.9" height="15.0" fill="rgb(0,228,15)" rx="2" ry="2" />
+<text text-anchor="" x="101.50" y="767.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>FUN_STATIC_Int# -&gt; Int# -&gt; Int:libraries/base/GHC/Arr.hs:(235,1)-(236,62) (1 samples, 0.42%)</title><rect x="423.0" y="693" width="4.9" height="15.0" fill="rgb(0,222,164)" rx="2" ry="2" />
+<text text-anchor="" x="426.00" y="703.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>IND_STATIC_: (1 samples, 0.42%)</title><rect x="585.2" y="853" width="5.0" height="15.0" fill="rgb(0,197,93)" rx="2" ry="2" />
+<text text-anchor="" x="588.25" y="863.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_: (5 samples, 2.08%)</title><rect x="1160.5" y="741" width="24.6" height="15.0" fill="rgb(0,226,112)" rx="2" ry="2" />
+<text text-anchor="" x="1163.50" y="751.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >C..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_: (3 samples, 1.25%)</title><rect x="290.2" y="693" width="14.8" height="15.0" fill="rgb(0,226,22)" rx="2" ry="2" />
+<text text-anchor="" x="293.25" y="703.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_TextEncoding:libraries/base/GHC/IO/Encoding/UTF8.hs:48:48-54 (1 samples, 0.42%)</title><rect x="629.5" y="773" width="4.9" height="15.0" fill="rgb(0,230,58)" rx="2" ry="2" />
+<text text-anchor="" x="632.50" y="783.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>-&gt; (# State# RealWorld, a #):libraries/base/System/Posix/Internals.hs:(226,1)-(258,21) (8 samples, 3.33%)</title><rect x="506.6" y="885" width="39.3" height="15.0" fill="rgb(0,197,58)" rx="2" ry="2" />
+<text text-anchor="" x="509.58" y="895.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >-&gt; ..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (6 samples, 2.50%)</title><rect x="1155.6" y="789" width="29.5" height="15.0" fill="rgb(0,231,41)" rx="2" ry="2" />
+<text text-anchor="" x="1158.58" y="799.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >CO..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>THUNK_1_0_Int:test-progs/LazyThunk.hs:12:53-57 (1 samples, 0.42%)</title><rect x="1086.8" y="325" width="4.9" height="15.0" fill="rgb(0,225,204)" rx="2" ry="2" />
+<text text-anchor="" x="1089.75" y="335.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (5 samples, 2.08%)</title><rect x="359.1" y="677" width="24.6" height="15.0" fill="rgb(0,214,208)" rx="2" ry="2" />
+<text text-anchor="" x="362.08" y="687.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >C..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_2_0_Dynamic:libraries/base/GHC/TopHandler.hs:(110,1)-(116,12) (1 samples, 0.42%)</title><rect x="560.7" y="789" width="4.9" height="15.0" fill="rgb(0,194,123)" rx="2" ry="2" />
+<text text-anchor="" x="563.67" y="799.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (2 samples, 0.83%)</title><rect x="418.1" y="725" width="9.8" height="15.0" fill="rgb(0,235,200)" rx="2" ry="2" />
+<text text-anchor="" x="421.08" y="735.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>THUNK_1_0_Int:test-progs/LazyThunk.hs:12:53-57 (1 samples, 0.42%)</title><rect x="1086.8" y="165" width="4.9" height="15.0" fill="rgb(0,224,53)" rx="2" ry="2" />
+<text text-anchor="" x="1089.75" y="175.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>FUN_STATIC_State# RealWorld -&gt; (# State# RealWorld, () #):libraries/base/GHC/TopHandler.hs:235:10-15 (9 samples, 3.75%)</title><rect x="73.9" y="869" width="44.3" height="15.0" fill="rgb(0,206,104)" rx="2" ry="2" />
+<text text-anchor="" x="76.92" y="879.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >FUN_..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>FUN_STATIC_Int16# -&gt; Event: (1 samples, 0.42%)</title><rect x="398.4" y="677" width="4.9" height="15.0" fill="rgb(0,199,194)" rx="2" ry="2" />
+<text text-anchor="" x="401.42" y="687.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_2_0_[]:libraries/base/GHC/Foreign.hs:209:42-58 (5 samples, 2.08%)</title><rect x="860.6" y="725" width="24.6" height="15.0" fill="rgb(0,239,61)" rx="2" ry="2" />
+<text text-anchor="" x="863.58" y="735.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >C..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_2_0_: (2 samples, 0.83%)</title><rect x="270.6" y="597" width="9.8" height="15.0" fill="rgb(0,237,13)" rx="2" ry="2" />
+<text text-anchor="" x="273.58" y="607.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (2 samples, 0.83%)</title><rect x="393.5" y="725" width="9.8" height="15.0" fill="rgb(0,228,45)" rx="2" ry="2" />
+<text text-anchor="" x="396.50" y="735.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (5 samples, 2.08%)</title><rect x="359.1" y="661" width="24.6" height="15.0" fill="rgb(0,233,153)" rx="2" ry="2" />
+<text text-anchor="" x="362.08" y="671.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >C..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>IND_STATIC_: (1 samples, 0.42%)</title><rect x="629.5" y="789" width="4.9" height="15.0" fill="rgb(0,232,65)" rx="2" ry="2" />
+<text text-anchor="" x="632.50" y="799.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_2_0_: (3 samples, 1.25%)</title><rect x="334.5" y="869" width="14.7" height="15.0" fill="rgb(0,213,169)" rx="2" ry="2" />
+<text text-anchor="" x="337.50" y="879.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>FUN_STATIC_Int -&gt; Int -&gt; Int -&gt; Int: (2 samples, 0.83%)</title><rect x="604.9" y="661" width="9.9" height="15.0" fill="rgb(0,222,85)" rx="2" ry="2" />
+<text text-anchor="" x="607.92" y="671.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (5 samples, 2.08%)</title><rect x="595.1" y="757" width="24.6" height="15.0" fill="rgb(0,233,169)" rx="2" ry="2" />
+<text text-anchor="" x="598.08" y="767.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >C..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (1 samples, 0.42%)</title><rect x="580.3" y="805" width="4.9" height="15.0" fill="rgb(0,226,51)" rx="2" ry="2" />
+<text text-anchor="" x="583.33" y="815.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>MVAR_CLEAN_: (1 samples, 0.42%)</title><rect x="1086.8" y="837" width="4.9" height="15.0" fill="rgb(0,195,131)" rx="2" ry="2" />
+<text text-anchor="" x="1089.75" y="847.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (1 samples, 0.42%)</title><rect x="378.8" y="581" width="4.9" height="15.0" fill="rgb(0,216,37)" rx="2" ry="2" />
+<text text-anchor="" x="381.75" y="591.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>FUN_1_0_SomeException -&gt; State# RealWorld -&gt; (# State# RealWorld, a #):libraries/base/GHC/IO.hs:184:40-47 (9 samples, 3.75%)</title><rect x="840.9" y="837" width="44.3" height="15.0" fill="rgb(0,213,17)" rx="2" ry="2" />
+<text text-anchor="" x="843.92" y="847.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >FUN_..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (2 samples, 0.83%)</title><rect x="270.6" y="645" width="9.8" height="15.0" fill="rgb(0,208,98)" rx="2" ry="2" />
+<text text-anchor="" x="273.58" y="655.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>FUN_2_0_SomeException -&gt; State# RealWorld -&gt; (# State# RealWorld, c #):libraries/base/GHC/IO.hs:184:40-47 (3 samples, 1.25%)</title><rect x="1135.9" y="821" width="14.8" height="15.0" fill="rgb(0,225,14)" rx="2" ry="2" />
+<text text-anchor="" x="1138.92" y="831.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>MVAR_DIRTY_: (4 samples, 1.67%)</title><rect x="54.2" y="805" width="19.7" height="15.0" fill="rgb(0,196,76)" rx="2" ry="2" />
+<text text-anchor="" x="57.25" y="815.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_2_0_: (1 samples, 0.42%)</title><rect x="801.6" y="773" width="4.9" height="15.0" fill="rgb(0,198,143)" rx="2" ry="2" />
+<text text-anchor="" x="804.58" y="783.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_: (4 samples, 1.67%)</title><rect x="595.1" y="677" width="19.7" height="15.0" fill="rgb(0,211,56)" rx="2" ry="2" />
+<text text-anchor="" x="598.08" y="687.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_1_KQueue:libraries/base/GHC/Event/KQueue.hsc:83:3-11 (1 samples, 0.42%)</title><rect x="895.0" y="821" width="4.9" height="15.0" fill="rgb(0,235,12)" rx="2" ry="2" />
+<text text-anchor="" x="898.00" y="831.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_STRef:libraries/base/GHC/Event/Thread.hs:203:45-54 (1 samples, 0.42%)</title><rect x="580.3" y="725" width="4.9" height="15.0" fill="rgb(0,199,165)" rx="2" ry="2" />
+<text text-anchor="" x="583.33" y="735.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>THUNK_1_0_Int:test-progs/LazyThunk.hs:12:53-57 (1 samples, 0.42%)</title><rect x="1086.8" y="245" width="4.9" height="15.0" fill="rgb(0,211,122)" rx="2" ry="2" />
+<text text-anchor="" x="1089.75" y="255.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>THUNK_1_0_Int:test-progs/LazyThunk.hs:12:53-57 (1 samples, 0.42%)</title><rect x="1086.8" y="805" width="4.9" height="15.0" fill="rgb(0,227,190)" rx="2" ry="2" />
+<text text-anchor="" x="1089.75" y="815.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_2_0_: (6 samples, 2.50%)</title><rect x="1155.6" y="773" width="29.5" height="15.0" fill="rgb(0,234,73)" rx="2" ry="2" />
+<text text-anchor="" x="1158.58" y="783.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >CO..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>THUNK_1_0_Int:test-progs/LazyThunk.hs:12:53-57 (1 samples, 0.42%)</title><rect x="1086.8" y="677" width="4.9" height="15.0" fill="rgb(0,201,105)" rx="2" ry="2" />
+<text text-anchor="" x="1089.75" y="687.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_2_0_: (2 samples, 0.83%)</title><rect x="408.2" y="661" width="9.9" height="15.0" fill="rgb(0,225,133)" rx="2" ry="2" />
+<text text-anchor="" x="411.25" y="671.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>MUT_ARR_PTRS_CLEAN_: (5 samples, 2.08%)</title><rect x="437.8" y="693" width="24.5" height="15.0" fill="rgb(0,230,89)" rx="2" ry="2" />
+<text text-anchor="" x="440.75" y="703.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >M..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (22 samples, 9.17%)</title><rect x="354.2" y="869" width="108.1" height="15.0" fill="rgb(0,197,96)" rx="2" ry="2" />
+<text text-anchor="" x="357.17" y="879.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >CONSTR_1_0_:</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_2_0_: (3 samples, 1.25%)</title><rect x="403.3" y="773" width="14.8" height="15.0" fill="rgb(0,201,94)" rx="2" ry="2" />
+<text text-anchor="" x="406.33" y="783.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (6 samples, 2.50%)</title><rect x="19.8" y="837" width="29.5" height="15.0" fill="rgb(0,227,42)" rx="2" ry="2" />
+<text text-anchor="" x="22.83" y="847.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >CO..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_2_0_ForeignPtrContents:libraries/base/GHC/IO/FD.hs:146:63-84 (1 samples, 0.42%)</title><rect x="703.2" y="837" width="5.0" height="15.0" fill="rgb(0,212,136)" rx="2" ry="2" />
+<text text-anchor="" x="706.25" y="847.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (1 samples, 0.42%)</title><rect x="624.6" y="853" width="4.9" height="15.0" fill="rgb(0,237,146)" rx="2" ry="2" />
+<text text-anchor="" x="627.58" y="863.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>FUN_STATIC_forall {a}. IO (Ptr a):libraries/base/Foreign/Marshal/Alloc.hs:(222,20)-(223,72) (4 samples, 1.67%)</title><rect x="526.2" y="837" width="19.7" height="15.0" fill="rgb(0,198,113)" rx="2" ry="2" />
+<text text-anchor="" x="529.25" y="847.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_1_0_: (2 samples, 0.83%)</title><rect x="270.6" y="661" width="9.8" height="15.0" fill="rgb(0,221,68)" rx="2" ry="2" />
+<text text-anchor="" x="273.58" y="671.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_2_0_: (9 samples, 3.75%)</title><rect x="260.8" y="773" width="44.2" height="15.0" fill="rgb(0,199,154)" rx="2" ry="2" />
+<text text-anchor="" x="263.75" y="783.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >CONS..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>THUNK_1_0_Int:test-progs/LazyThunk.hs:12:53-57 (1 samples, 0.42%)</title><rect x="1086.8" y="549" width="4.9" height="15.0" fill="rgb(0,193,191)" rx="2" ry="2" />
+<text text-anchor="" x="1089.75" y="559.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_2_0_[]:libraries/base/GHC/Foreign.hs:209:42-58 (3 samples, 1.25%)</title><rect x="870.4" y="693" width="14.8" height="15.0" fill="rgb(0,205,99)" rx="2" ry="2" />
+<text text-anchor="" x="873.42" y="703.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_: (4 samples, 1.67%)</title><rect x="29.7" y="757" width="19.6" height="15.0" fill="rgb(0,219,192)" rx="2" ry="2" />
+<text text-anchor="" x="32.67" y="767.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>FUN_1_0_  (9 samples, 3.75%)</title><rect x="840.9" y="805" width="44.3" height="15.0" fill="rgb(0,236,43)" rx="2" ry="2" />
+<text text-anchor="" x="843.92" y="815.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >FUN_..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>CONSTR_: (6 samples, 2.50%)</title><rect x="19.8" y="821" width="29.5" height="15.0" fill="rgb(0,235,69)" rx="2" ry="2" />
+<text text-anchor="" x="22.83" y="831.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >CO..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>FUN_STATIC_Handle -&gt; State# RealWorld -&gt; (# State# RealWorld, () #):libraries/base/GHC/IO/Handle.hs:295:1-67 (1 samples, 0.42%)</title><rect x="73.9" y="853" width="4.9" height="15.0" fill="rgb(0,212,97)" rx="2" ry="2" />
+<text text-anchor="" x="76.92" y="863.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>THUNK_1_0_BufferMode:libraries/base/GHC/IO/Handle/Internals.hs:686:40-44 (1 samples, 0.42%)</title><rect x="836.0" y="821" width="4.9" height="15.0" fill="rgb(0,218,194)" rx="2" ry="2" />
+<text text-anchor="" x="839.00" y="831.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+</svg>

@@ -5,10 +5,15 @@ layout: default
 
 # Visualization Libraries for ghc-debug
 
+This page serves as a conclusion to my Google Summer of Code project this past summer.
+
+I had great fun this summer working on ghc-debug. Thank you so much to the community at `#ghc` on IRC for being so welcoming to me, and to Matthew Pickering for mentoring me.
+
 ### Google Summer of Code Project Link
 https://summerofcode.withgoogle.com/projects/#6368742172262400
 
 ## Completed Work
+
 - Added support for exporting the resulting graph from the
 TypePointsFrom analysis to the GML graph visualization format: [ghc-debug merge request #3](https://gitlab.haskell.org/ghc/ghc-debug/-/merge_requests/3)
 
@@ -33,6 +38,42 @@ detection methods from
     - Characterizes leaks caused by lazy evaluation as long lists of the
     same kind of thunks
 
+
+## Examples and Pretty Pictures!
+The following visualizations are all from analyzing the following classic Haskell space leak, using my newly created library functions.
+
+The value of the lazy MVar is not evaluated until it has to be printed, causing a leak in the form of a linked list of thunks.
+
+```haskell
+main :: IO ()
+main = withGhcDebug $ do
+    mvar <- newMVar (1 :: Int)
+    replicateM_ 50 $ modifyMVar_ mvar (\x -> return (x+1))
+    putStrLn "Hit Enter to continue...\n"
+    _ <- getLine
+
+    replicateM_ 100 $ modifyMVar_ mvar (\x -> return (x+1))
+    putStrLn "Hit Enter to continue..."
+    _ <- getLine
+
+    replicateM_ 150 $ modifyMVar_ mvar (\x -> return (x+1))
+    putStrLn "Hit Enter to continue..."
+    _ <- getLine
+
+    -- Prevent GC by using the MVar
+    val <- takeMVar mvar
+    putStrLn . show $ val
+```
+
+![Flame graph for lazy thunk](../images/ghc-debug/lazy-thunk-flame.svg)
+
+
+TODO: Figure out how to embed the Vega-Lite charts like in https://mpickering.github.io/eventlog2html/
+
+
+[Census of Closure Types over Time (Stacked Area Chart)](../images/ghc-debug/lazy-thunk-stacked-area.html)
+
+[Census of Closure Types](../images/ghc-debug/lazy-thunk-closure-census.html)
 
 ## TODO
 - Adapt more of existing analysis functions to output to the generalized census type
