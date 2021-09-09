@@ -70,6 +70,9 @@ main = withGhcDebug $ do
 
 TODO: Figure out how to embed the Vega-Lite charts like in https://mpickering.github.io/eventlog2html/
 
+<iframe src=../images/ghc-debug/lazy-thunk-stacked-area.html></iframe>
+
+<iframe src=../images/ghc-debug/lazy-thunk-closure-census.html></iframe>
 
 [Census of Closure Types over Time (Stacked Area Chart)](../images/ghc-debug/lazy-thunk-stacked-area.html)
 
