@@ -65,20 +65,30 @@ main = withGhcDebug $ do
     putStrLn . show $ val
 ```
 
+### Flame Graph
+
 ![Flame graph for lazy thunk](../images/ghc-debug/lazy-thunk-flame.svg)
 
+<!-- kinda a hack to directly embed w/ src=url-to-github-pages -->
+### Heap Census
+<div>
+    <iframe src="https://zyklotomic.github.io/images/ghc-debug/lazy-thunk-closure-census.html" 
+    width=960 height=600></iframe>
+</div>
 
-TODO: Figure out how to embed the Vega-Lite charts like in https://mpickering.github.io/eventlog2html/
+[Click to open in new page](../images/ghc-debug/lazy-thunk-stacked-area.html)
 
-<iframe src=../images/ghc-debug/lazy-thunk-stacked-area.html></iframe>
 
-<iframe src=../images/ghc-debug/lazy-thunk-closure-census.html></iframe>
+### Heap Census over Time (Stacked Area)
+<div>
+    <iframe src="https://zyklotomic.github.io/images/ghc-debug/lazy-thunk-stacked-area.html"
+    width=960 height=600></iframe>
+</div>
 
-[Census of Closure Types over Time (Stacked Area Chart)](../images/ghc-debug/lazy-thunk-stacked-area.html)
+[Click to open in new page](../images/ghc-debug/lazy-thunk-closure-census.html)
 
-[Census of Closure Types](../images/ghc-debug/lazy-thunk-closure-census.html)
 
-## TODO
+## TODOs: How to Further Improve ghc-debug
 - Adapt more of existing analysis functions to output to the generalized census type
 
 - Continue experimenting with BLeak, to find the characterization that describes a memory
